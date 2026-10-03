@@ -300,12 +300,25 @@ static bool command_json_depth_valid(const uint8_t *data, size_t len) {
     return true;
 }
 
-static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted) {
+/* `owned` is the reassembled RX buffer, or the decrypted plaintext on the
+ * inner call. cJSON has its own copies, so wipe a decrypted buffer before
+ * free. The depth-reject path must wipe too: it returns before parse. */
+static void release_command_buffer(uint8_t *owned, size_t len, bool decrypted) {
+    if (!owned) return;
+    if (decrypted && len) mbedtls_platform_zeroize(owned, len);
+    free(owned);
+    ESP_LOGI(TAG, "%s buffer released %u bytes", decrypted ? "plain" : "RX",
+             (unsigned)len);
+}
+
+static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted, uint8_t *owned) {
     if (!command_json_depth_valid(data, len)) {
+        release_command_buffer(owned, len, decrypted);
         ble_server_send_status("error_invalid_command");
         return;
     }
     cJSON *root = cJSON_ParseWithLength((const char *)data, len);
+    release_command_buffer(owned, len, decrypted);
     if (!root) {
         ESP_LOGW(TAG, "RX invalid JSON (%d bytes)", (int)len);
         ble_server_send_status("error_invalid_command");
@@ -332,13 +345,15 @@ static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted)
     } else if (!decrypted && strcmp(act, "pairing_encrypted") == 0) {
         char *plain = NULL;
         const char *err = link_pairing_decrypt_command(root, &plain);
+        /* The envelope's base64 copy is done with. Drop it before the inner
+         * command is parsed, or before the error status is encrypted. */
+        delete_command_json(root, false);
+        root = NULL;
         if (err) {
             ble_server_send_status(err);
             ble_server_delayed_disconnect(300);
         } else if (plain) {
-            dispatch_command_ex((const uint8_t *)plain, strlen(plain), true);
-            mbedtls_platform_zeroize(plain, strlen(plain));
-            free(plain);
+            dispatch_command_ex((const uint8_t *)plain, strlen(plain), true, (uint8_t *)plain);
         }
     } else if (!decrypted && s_plaintext_status_blocked) {
         ESP_LOGW(TAG, "plaintext command suppressed after pairing ready: %s", act);
@@ -453,6 +468,11 @@ static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted)
             if (cJSON_IsString(nh) && nh->valuestring && *nh->valuestring) {
                 a->noise_host = dup_str(nh->valuestring);
             }
+            /* Strings are copied. Drop the parse tree before the 8 KB task
+             * stack is taken, or that stack is carved out of a block the JSON
+             * is still sitting in. */
+            delete_command_json(root, decrypted);
+            root = NULL;
             // 8 KB stack — mbedtls 3.6 (IDF v6) needs significantly more
             // stack during TLS handshake than v5's 3.x (~2 KB more peak).
             a->session_generation = link_pairing_mark_provisioning_active();
@@ -488,11 +508,11 @@ static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted)
     } else {
         ble_server_send_status("error_unknown_action");
     }
-    delete_command_json(root, decrypted);
+    if (root) delete_command_json(root, decrypted);
 }
 
 static void dispatch_command(const uint8_t *data, size_t len) {
-    dispatch_command_ex(data, len, false);
+    dispatch_command_ex(data, len, false, NULL);
 }
 
 // ---- RX reassembly ---------------------------------------------------------
@@ -531,7 +551,11 @@ static void handle_rx_write_locked(const uint8_t *data, size_t len,
             s_rx_total = total;
             s_rx_cap = MAX_RX_TOTAL_BYTES;
             s_rx_buf = malloc(s_rx_cap);
-            if (!s_rx_buf) { rx_reset_locked(); return; }
+            if (!s_rx_buf) {
+                ESP_LOGW(TAG, "RX alloc failed (%u)", (unsigned)s_rx_cap);
+                rx_reset_locked();
+                return;
+            }
             s_rx_len = 0;
         }
 
@@ -566,8 +590,20 @@ static void handle_rx_write(const uint8_t *data, size_t len) {
     handle_rx_write_locked(data, len, &complete, &complete_len);
     xSemaphoreGive(s_rx_mutex);
     if (complete) {
-        dispatch_command(complete, complete_len);
-        free(complete);
+        /* Shrink before parse. dispatch frees this block once cJSON has
+         * copied it, before decrypt. A failed shrink keeps the 8192 block. */
+        if (complete_len > 0 && complete_len < MAX_RX_TOTAL_BYTES) {
+            uint8_t *shrunk = realloc(complete, complete_len);
+            if (shrunk) {
+                complete = shrunk;
+            } else {
+                ESP_LOGW(TAG, "RX shrink failed, holding %u", MAX_RX_TOTAL_BYTES);
+            }
+        }
+        ESP_LOGI(TAG, "RX hold %u bytes", (unsigned)complete_len);
+        /* Ownership of the reassembly buffer moves in. It is freed once the
+         * outer JSON has been parsed, before decrypt and provision. */
+        dispatch_command_ex(complete, complete_len, false, complete);
     }
 }
 
@@ -1069,6 +1105,10 @@ void ble_server_set_companion_advertising(bool enabled) {
 
 bool ble_server_is_started(void) {
     return s_started && !s_shutting_down;
+}
+
+bool ble_server_is_advertising(void) {
+    return s_advertising_active;
 }
 
 bool ble_server_has_connection(void) {

@@ -330,7 +330,11 @@ class LinkEncryptedPairingContractTest(unittest.TestCase):
         self.assertIn("mbedtls_platform_zeroize(cur->valuestring", wipe)
         self.assertIn("secure_free_str(a->password)", provision_task)
         self.assertIn("secure_free_str(a->access_token)", provision_task)
-        self.assertIn("mbedtls_platform_zeroize(plain", dispatch)
+        release = _function_body(ble, "static void release_command_buffer(")
+        self.assertIn("if (decrypted && len) mbedtls_platform_zeroize(owned, len)", release)
+        self.assertLess(release.index("mbedtls_platform_zeroize(owned, len)"),
+                        release.index("free(owned)"))
+        self.assertEqual(dispatch.count("release_command_buffer(owned, len, decrypted)"), 2)
 
     def test_wifi_scan_results_require_encrypted_pairing(self) -> None:
         app = APP_C.read_text()

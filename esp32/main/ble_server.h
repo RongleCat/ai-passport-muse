@@ -59,6 +59,7 @@ void ble_server_set_companion(const ble_companion_t *companion);
 // Keep advertising for the companion service even after setup is complete.
 void ble_server_set_companion_advertising(bool enabled);
 bool ble_server_is_started(void);
+bool ble_server_is_advertising(void);
 
 void ble_server_start(const char *device_name, const ble_callbacks_t *cb);
 void ble_server_begin_advertising(void);

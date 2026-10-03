@@ -293,7 +293,10 @@ static bool base64url_decode(const char *in, uint8_t *out, size_t out_cap, size_
     if (n == 0 || n > 4096 || (n % 4) == 1) return false;
     size_t padded = n + ((4 - (n % 4)) % 4);
     char *tmp = malloc(padded + 1);
-    if (!tmp) return false;
+    if (!tmp) {
+        ESP_LOGW(TAG, "base64 alloc failed (%u)", (unsigned)(padded + 1));
+        return false;
+    }
     for (size_t i = 0; i < n; i++) {
         unsigned char c = (unsigned char)in[i];
         if (c == '-') c = '+';
@@ -311,6 +314,20 @@ static bool base64url_decode(const char *in, uint8_t *out, size_t out_cap, size_
     free(tmp);
     if (rc != 0) return false;
     *out_len = olen;
+    return true;
+}
+
+/* Decoded size of a base64url string, plus a few bytes of slack for padding.
+ * Reject above PAIRING_CIPHER_MAX: the old decrypt buffer was 8192 and a
+ * longer record is still an error. */
+#define PAIRING_CIPHER_MAX 8192
+
+static bool cipher_buffer_size(const char *cipher_b64, size_t *n_out) {
+    size_t len = strlen(cipher_b64);
+    if (len > (SIZE_MAX - 3) / 3) return false;
+    size_t n = (len * 3) / 4 + 3;
+    if (n == 0 || n > PAIRING_CIPHER_MAX) return false;
+    *n_out = n;
     return true;
 }
 
@@ -861,6 +878,7 @@ const char *link_pairing_decrypt_command(cJSON *root, char **plaintext_json) {
     if (plaintext_json) *plaintext_json = NULL;
     lock_take();
     if (expired_locked() || !session_keys_available_locked()) {
+        ESP_LOGW(TAG, "decrypt rejected: no session");
         reset_locked();
         lock_give();
         return "error_pairing_decrypt";
@@ -871,41 +889,77 @@ const char *link_pairing_decrypt_command(cJSON *root, char **plaintext_json) {
     const char *cipher_b64 = NULL;
     const char *tag_b64 = NULL;
     uint64_t counter = 0;
+    const char *why = NULL;
     if (!json_string(root, "session_id", &session_id)
-        || strcmp(session_id, s_session_id_b64) != 0
-        || !json_string(root, "counter", &counter_str)
-        || !parse_u64_decimal(counter_str, &counter)
-        || counter != s_rx_counter
-        || !json_string(root, "ciphertext", &cipher_b64)
-        || !json_string(root, "tag", &tag_b64)) {
+        || strcmp(session_id, s_session_id_b64) != 0) {
+        why = "session";
+    } else if (!json_string(root, "counter", &counter_str)
+               || !parse_u64_decimal(counter_str, &counter)
+               || counter != s_rx_counter) {
+        why = "counter";
+    } else if (!json_string(root, "ciphertext", &cipher_b64)) {
+        why = "ciphertext";
+    } else if (!json_string(root, "tag", &tag_b64)) {
+        why = "tag";
+    }
+    if (why) {
+        ESP_LOGW(TAG, "decrypt rejected: %s", why);
         reset_locked();
         lock_give();
         return "error_pairing_decrypt";
     }
 
-    uint8_t *cipher = malloc(8192);
-    uint8_t *plain = malloc(8193);
+    size_t n = 0;
+    if (!cipher_buffer_size(cipher_b64, &n)) {
+        ESP_LOGW(TAG, "decrypt rejected: cipher cap b64=%u",
+                 (unsigned)strlen(cipher_b64));
+        reset_locked();
+        lock_give();
+        return "error_pairing_decrypt";
+    }
+
+    uint8_t *cipher = malloc(n);
+    uint8_t *plain = malloc(n + 1);
     uint8_t tag[GCM_TAG_BYTES];
     size_t cipher_len = 0;
     size_t tag_len = 0;
-    bool ok = cipher && plain
-              && base64url_decode(cipher_b64, cipher, 8192, &cipher_len)
-              && base64url_decode(tag_b64, tag, sizeof(tag), &tag_len)
-              && tag_len == GCM_TAG_BYTES
-              && aes_gcm_decrypt(s_rx_key, cipher, cipher_len, tag,
-                                 0, s_rx_counter, plain);
-    if (ok) {
+    const char *fail = NULL;
+    if (!cipher || !plain) {
+        fail = "alloc";
+        ESP_LOGW(TAG, "decrypt alloc failed need=%u cipher=%d plain=%d",
+                 (unsigned)n, cipher != NULL, plain != NULL);
+    } else if (!base64url_decode(cipher_b64, cipher, n, &cipher_len)) {
+        fail = "decode";
+        ESP_LOGW(TAG, "decrypt base64 failed b64=%u cap=%u",
+                 (unsigned)strlen(cipher_b64), (unsigned)n);
+    } else if (!base64url_decode(tag_b64, tag, sizeof(tag), &tag_len)
+               || tag_len != GCM_TAG_BYTES) {
+        fail = "tag";
+        ESP_LOGW(TAG, "decrypt tag failed len=%u", (unsigned)tag_len);
+    } else if (!aes_gcm_decrypt(s_rx_key, cipher, cipher_len, tag,
+                                0, s_rx_counter, plain)) {
+        fail = "gcm";
+        ESP_LOGW(TAG, "decrypt gcm failed bytes=%u", (unsigned)cipher_len);
+    }
+    if (!fail) {
         plain[cipher_len] = '\0';
         *plaintext_json = (char *)plain;
         plain = NULL;
         s_rx_counter++;
+        ESP_LOGI(TAG, "decrypt ok bytes=%u", (unsigned)cipher_len);
     } else {
         reset_locked();
     }
-    free(cipher);
-    free(plain);
+    if (cipher) {
+        mbedtls_platform_zeroize(cipher, n);
+        free(cipher);
+    }
+    if (plain) {
+        mbedtls_platform_zeroize(plain, n + 1);
+        free(plain);
+    }
     lock_give();
-    return ok ? NULL : "error_pairing_decrypt";
+    return fail ? "error_pairing_decrypt" : NULL;
 }
 
 uint32_t link_pairing_handle_client_finished(void) {

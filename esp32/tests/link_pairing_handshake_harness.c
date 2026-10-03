@@ -36,7 +36,24 @@ static psa_status_t test_import_key(const psa_key_attributes_t *, const uint8_t 
 static psa_status_t test_sign_hash(psa_key_id_t, psa_algorithm_t, const uint8_t *, size_t, uint8_t *, size_t, size_t *);
 #define psa_import_key test_import_key
 #define psa_sign_hash test_sign_hash
+
+/* Requests at or above the ceiling fail. 0 disables the limit. Models a heap
+ * whose largest block is smaller than the old fixed 8192/8193 decrypt buffers. */
+static size_t test_alloc_ceiling;
+static int test_alloc_denied;
+static size_t test_alloc_peak;
+static void *test_limited_malloc(size_t n) {
+    if (test_alloc_ceiling && n >= test_alloc_ceiling) {
+        test_alloc_denied++;
+        return NULL;
+    }
+    void *p = malloc(n);
+    if (p && n > test_alloc_peak) test_alloc_peak = n;
+    return p;
+}
+#define malloc test_limited_malloc
 #include "link_pairing.c"
+#undef malloc
 #undef psa_import_key
 #undef psa_sign_hash
 
@@ -371,6 +388,95 @@ static void pairing_confirmed_carries_sdk_token(void) {
     reboot(0);
 }
 
+static cJSON *encrypted_plain(const char *plain, uint64_t counter, size_t *envelope_len) {
+    size_t n = strlen(plain);
+    uint8_t *cipher = malloc(n);
+    uint8_t tag[16];
+    assert(cipher);
+    assert(aes_gcm_encrypt(s_rx_key, (const uint8_t *)plain, n, 0, counter, cipher, tag));
+    char *envelope = make_envelope("action", counter, cipher, n, tag);
+    free(cipher);
+    assert(envelope);
+    if (envelope_len) *envelope_len = strlen(envelope);
+    cJSON *j = cJSON_Parse(envelope);
+    free(envelope);
+    assert(j);
+    return j;
+}
+
+/* The old decrypt path malloc(8192) and malloc(8193) up front. After a chunked
+ * RX buffer of 8192 is already live, those requests do not fit. The sized
+ * buffers do, and the plaintext still round-trips. A ciphertext whose decoded
+ * bound is over 8192 is still rejected, and it must not attempt the old alloc. */
+static void large_decrypt_under_tight_heap(void) {
+    reboot(0);
+    accept(true);
+    test_alloc_ceiling = 8192;
+    test_alloc_denied = 0;
+    test_alloc_peak = 0;
+    cJSON *fin = encrypted_finished();
+    char *plain = NULL;
+    assert(!link_pairing_decrypt_command(fin, &plain));
+    assert(plain && strcmp(plain, "{\"action\":\"pairing_client_finished\"}") == 0);
+    assert(test_alloc_denied == 0 && test_alloc_peak < 8192);
+    free(plain);
+    cJSON_Delete(fin);
+    test_alloc_ceiling = 0;
+    link_pairing_reset();
+
+    reboot(0);
+    accept(true);
+    char *body = malloc(2200);
+    assert(body);
+    int head = snprintf(body, 2200,
+                        "{\"action\":\"provision_v2\",\"ssid\":\"net\",\"password\":\"secret\",\"access_token\":\"");
+    assert(head > 0 && head < 2000);
+    memset(body + head, 'A', 1800);
+    strcpy(body + head + 1800, "\",\"refresh_token\":\"r\",\"token_type\":\"device\"}");
+    size_t envelope_len = 0;
+    cJSON *big = encrypted_plain(body, 0, &envelope_len);
+    test_alloc_ceiling = 8192;
+    test_alloc_denied = 0;
+    assert(test_limited_malloc(8192) == NULL);
+    assert(test_limited_malloc(8193) == NULL);
+    assert(test_alloc_denied == 2);
+    test_alloc_denied = 0;
+    test_alloc_peak = 0;
+    plain = NULL;
+    assert(!link_pairing_decrypt_command(big, &plain));
+    assert(plain && strcmp(plain, body) == 0);
+    assert(test_alloc_denied == 0);
+    assert(test_alloc_peak > 1000 && test_alloc_peak < 8192);
+    printf("tight-heap plain=%zu envelope=%zu peak=%zu\n",
+           strlen(body), envelope_len, test_alloc_peak);
+    free(plain);
+    cJSON_Delete(big);
+    free(body);
+    test_alloc_ceiling = 0;
+
+    char *huge = malloc(11100);
+    char *json = malloc(11400);
+    assert(huge && json);
+    memset(huge, 'A', 11000);
+    huge[11000] = '\0';
+    int wrote = snprintf(json, 11400,
+                         "{\"action\":\"pairing_encrypted\",\"session_id\":\"%s\","
+                         "\"counter\":\"1\",\"ciphertext\":\"%s\",\"tag\":\"AAAA\"}",
+                         s_session_id_b64, huge);
+    assert(wrote > 11000 && wrote < 11400);
+    cJSON *over = cJSON_Parse(json);
+    assert(over);
+    test_alloc_ceiling = 8192;
+    test_alloc_denied = 0;
+    plain = NULL;
+    const char *err = link_pairing_decrypt_command(over, &plain);
+    assert(err && strcmp(err, "error_pairing_decrypt") == 0 && !plain);
+    assert(test_alloc_denied == 0 && s_state == PAIRING_IDLE);
+    cJSON_Delete(over);
+    free(json);
+    free(huge);
+}
+
 int main(void) {
     assert(psa_crypto_init()==PSA_SUCCESS);
     reboot(0);
@@ -415,7 +521,8 @@ int main(void) {
     stale_confirmation_work_cannot_affect_replacement();
     provisioning_and_scan_work_cannot_cross_sessions();
     pairing_confirmed_carries_sdk_token();
-    printf("PASS actual pairing: eFuse=%d, explicit auth/policy agreement, encrypted finished/confirmation/replay/timeouts\n",
+    large_decrypt_under_tight_heap();
+    printf("PASS actual pairing: eFuse=%d, explicit auth/policy agreement, encrypted finished/confirmation/replay/timeouts, tight-heap large decrypt\n",
            TEST_PAIRING_EFUSE_AUTH);
     return 0;
 }
