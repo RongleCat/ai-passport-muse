@@ -30,7 +30,9 @@
 #define SIM_DIAGONAL_IN 2.4f
 #define SIM_TALK_BUTTON "OK"
 #define SIM_AUX_BUTTON "DOWN"
-#define SIM_TALK_HINT { LV_ALIGN_BOTTOM_MID, 0, -12 }
+#define SIM_TALK_HINT { LV_ALIGN_BOTTOM_MID, 36, -8 }
+#define SIM_AUX_HINT { LV_ALIGN_BOTTOM_MID, -36, -8 }
+#define SIM_FRAME_MS 50
 #else
 #define SIM_WIDTH 412
 #define SIM_HEIGHT 412
@@ -42,6 +44,8 @@
 #define SIM_TALK_BUTTON "wheel"
 #define SIM_AUX_BUTTON "scroll"
 #define SIM_TALK_HINT { LV_ALIGN_CENTER, 100, -143 }
+#define SIM_AUX_HINT { LV_ALIGN_DEFAULT, 0, 0 }
+#define SIM_FRAME_MS 40
 #endif
 
 static lv_display_t *s_display;
@@ -106,7 +110,8 @@ static const muse_board_t s_sim_board = {
     .talk_button = SIM_TALK_BUTTON,
     .aux_button = SIM_AUX_BUTTON,
     .talk_hint = SIM_TALK_HINT,
-    .frame_ms = 40,
+    .aux_hint = SIM_AUX_HINT,
+    .frame_ms = SIM_FRAME_MS,
     .init = sim_init,
     .display_start = sim_display_start,
     .display_lock = sim_display_lock,
