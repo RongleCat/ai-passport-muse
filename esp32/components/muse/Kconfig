@@ -66,6 +66,10 @@ menu "Muse"
         config MUSE_BOARD_M5STACK_STOPWATCH
             bool "M5Stack StopWatch (ESP32-S3, round touch AMOLED)"
             depends on IDF_TARGET_ESP32S3
+
+        config MUSE_BOARD_PASSPORT
+            bool "FoloToy AI Passport (ESP32-C3, 240x320, no PSRAM)"
+            depends on IDF_TARGET_ESP32C3
     endchoice
 
     config MUSE_ENABLED
@@ -86,6 +90,7 @@ menu "Muse"
         default "m5stack_stickc_plus2" if MUSE_BOARD_M5STACK_STICKC_PLUS2
         default "m5stack_cardputer_adv" if MUSE_BOARD_M5STACK_CARDPUTER_ADV
         default "m5stack_stopwatch" if MUSE_BOARD_M5STACK_STOPWATCH
+        default "passport" if MUSE_BOARD_PASSPORT
         default "none"
 
     # The Muse tools' serial port: the console UART behind the board's USB
@@ -117,5 +122,15 @@ menu "Muse"
             muse_chat_session.cpp is where a TTS API of your own can speak
             them. Needs PSRAM. Without it, voice notes go over Home Link's own
             session to its paired VM and replies are shown as text.
+
+    config MUSE_PASSPORT_HEAP_LOG
+        bool "Log Passport internal heap every 5 seconds"
+        depends on MUSE_BOARD_PASSPORT
+        default y
+        help
+            A low-priority task prints internal-heap free, minimum-ever and
+            largest free block. Depends on the Passport board, so other
+            boards, including the M5 ones, leave it off. Turn it off once
+            the memory budget is known.
 
 endmenu
