@@ -30,8 +30,9 @@
 #define SIM_DIAGONAL_IN 2.4f
 #define SIM_TALK_BUTTON "OK"
 #define SIM_AUX_BUTTON "DOWN"
-#define SIM_TALK_HINT { LV_ALIGN_BOTTOM_MID, 36, -8 }
-#define SIM_AUX_HINT { LV_ALIGN_BOTTOM_MID, -36, -8 }
+/* Same insets as board_passport.c. Menu text follows align, not x. */
+#define SIM_TALK_HINT { LV_ALIGN_BOTTOM_RIGHT, -16, -8 }
+#define SIM_AUX_HINT { LV_ALIGN_BOTTOM_LEFT, 16, -8 }
 #define SIM_FRAME_MS 50
 #else
 #define SIM_WIDTH 412

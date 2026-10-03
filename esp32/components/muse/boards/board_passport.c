@@ -1283,8 +1283,10 @@ static const muse_board_t s_board = {
     .keyboard = false,
     .talk_button = "OK",
     .aux_button = "DOWN",
-    .talk_hint = { LV_ALIGN_BOTTOM_MID, 36, -8 },
-    .aux_hint = { LV_ALIGN_BOTTOM_MID, -36, -8 },
+    /* align_on_bar uses only align, so BOTTOM_MID stacks both menu words.
+     * x is the same 16 px inset the bar uses; y=-8 stays above the 30 px corner. */
+    .talk_hint = { LV_ALIGN_BOTTOM_RIGHT, -16, -8 },
+    .aux_hint = { LV_ALIGN_BOTTOM_LEFT, 16, -8 },
     .frame_ms = 50,
     .init = init,
     .display_start = display_start,

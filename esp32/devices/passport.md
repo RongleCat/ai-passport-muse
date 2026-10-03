@@ -73,6 +73,12 @@ python -m esptool --chip esp32c3 -p <PORT> write-flash 0x0 <factory-backup.bin>
 - **OK** confirms a pairing request and is push-to-talk. **DOWN** opens and
   moves down the menu; **UP** moves up. Reset pairing only through menu
   **Reset pairing**; there is no five-second reset gesture.
+- Button hints use the lower corners: OK is `LV_ALIGN_BOTTOM_RIGHT` at
+  (−16, −8) and DOWN is `LV_ALIGN_BOTTOM_LEFT` at (16, −8). Menu words follow
+  `align` only, so the old shared `BOTTOM_MID` drew both strings on one
+  anchor. The 16 px inset and y=−8 keep that ink inside the 30 px corner
+  mask. The same anchors place the home-screen icons, below the caption box
+  (its bottom is about y=282). A single CJK caption line's ink is y=245–257.
 - `CONFIG_MUSE_CJK_FONT=y` is enabled for this board. The font accepts Chinese
   captions such as `你好 Muse，中英混排 OK`; visual glyph quality, rounded corners,
   color, and tearing are **unverified by human inspection**.
@@ -141,6 +147,10 @@ free). I2S remains 4 descriptors × 160 frames: 10 ms per buffer and roughly
   push-to-talk sessions are **unverified** on the final image.
 - The menu path was hardware-tested. T12 captured the pixels handed to the
   panel, including CJK glyph bitmaps, layout, and the rounded-corner mask.
+  Those frames showed the menu and Reset pairing hints stacked on one anchor.
+  T13 moved the hints to the lower corners and captured the panel pixels
+  again. The two strings are separate, and a single-line CJK caption still
+  lands at y=245–257.
   Human inspection of the glass — panel INVON colors, the physical bezel,
   tearing, and backlight brightness — is **unverified**.
 - Screen pause/resume was tested while USB was connected; USB held a
