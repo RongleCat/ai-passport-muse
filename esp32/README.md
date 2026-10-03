@@ -182,7 +182,7 @@ status screen.
 | M5Stack StickS3 | UI, push-to-talk, two-button menu, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | M5Stack StopWatch | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | M5Stack StickC Plus2 | UI, push-to-talk, two-button menu, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
-| FoloToy AI Passport | UI, text-reply push-to-talk, three-button menu, battery status | `tools/muse/board.sh build passport` |
+| FoloToy AI Passport | UI with CJK captions, text-reply push-to-talk, three-button menu, battery status; no tunnel, images, or spoken replies | `tools/muse/board.sh build passport` |
 
 See [`devices/`](devices) for each board's hardware, features, and where to
 buy one.
@@ -192,9 +192,10 @@ board in its own `build-<board>` directory with the right chip and settings.
 Boards that support images can show pictures Muse sends them:
 `tools/image_for_display.py` prepares a picture for the screen size.
 
-Boards without PSRAM, like the classic ESP32 and the ESP32-C6, run without the
-home-network tunnel, which needs more memory than they have. Muse can still
-reach the device and control it.
+Boards without PSRAM, like the classic ESP32, ESP32-C6, and AI Passport, run
+without the home-network tunnel, which needs more memory than they have. The
+AI Passport also does not show pushed images or play spoken replies; it shows
+text replies as captions. Muse can still reach and control these devices.
 
 ## Hack and extend it
 

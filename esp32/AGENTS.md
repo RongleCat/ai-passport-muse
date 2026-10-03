@@ -62,6 +62,12 @@ before adding a feature to one.
 | M5Stack StickC Plus2 | `esp32` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stickc-plus2` | manual |
 | FoloToy AI Passport | `esp32c3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-passport` | `tools/muse/board.sh build passport` |
 
+Passport is an 8 MB ESP32-C3 board without PSRAM. Its full UI uses CJK
+captions and text replies, but does not support the home-network tunnel,
+pushed images, or spoken replies. See [`devices/passport.md`](devices/passport.md)
+before changing it; it records the validated memory budget, direct esptool
+flash workaround for ESP-IDF v6.0.1, and the still-unverified sleep paths.
+
 The default profile expects the C5 DevKitC-1: an addressable status LED on
 GPIO27, the BOOT button on GPIO28 (active low), 8 MB flash and quad PSRAM.
 The DevKitC-1's LED takes red first (`CONFIG_HOMEHUB_LED_RGB_ORDER`, on by

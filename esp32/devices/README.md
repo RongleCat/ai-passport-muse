@@ -44,7 +44,7 @@ session to Muse. The rest depends on the hardware.
 | **M5Stack StickS3** | ESP32-S3 | 1.14" 135×240 LCD | 8 MB / 8 MB | [M5Stack docs](https://docs.m5stack.com/en/core/StickS3), [M5Unified](https://github.com/m5stack/M5Unified) | [M5Stack](https://shop.m5stack.com/products/m5sticks3-esp32s3-mini-iot-dev-kit) |
 | **M5Stack StopWatch** | ESP32-S3 | 1.75" 466×466 round AMOLED, touch | 16 MB / 8 MB | [M5Stack docs](https://docs.m5stack.com/en/core/StopWatch), [M5Unified](https://github.com/m5stack/M5Unified), [factory firmware](https://github.com/m5stack/M5StopWatch-UserDemo) | — |
 | **M5Stack StickC Plus2** | ESP32 | 1.14" 135×240 LCD | 8 MB / 2 MB | [M5Stack docs](https://docs.m5stack.com/en/core/M5StickC%20PLUS2), [M5Unified](https://github.com/m5stack/M5Unified) | [M5Stack](https://shop.m5stack.com/products/m5stickc-plus2-esp32-mini-iot-development-kit) (end of life) |
-| **FoloToy AI Passport** | ESP32-C3 | 240×320 LCD | 8 MB / none | — | — |
+| **FoloToy AI Passport** | ESP32-C3 | 240×320 LCD | 8 MB / none | `ai-passport` `components/bsp/include/bsp_pins.h` | — |
 
 ## Features
 
@@ -62,12 +62,27 @@ session to Muse. The rest depends on the hardware.
 | Over-the-air updates | Off | Off | Off | Off | Off | On | On | On | On | On | On | On | Off | On | On | Off |
 | Buttons | BOOT | BOOT | Top | Green | Centre (talk), dial | PWR (talk), BOOT | BOOT (talk), PWR | Two | BOOT (talk), PWR | Wheel (press to talk, turn to sleep) | Front (talk), side (menu), PWR | Front (talk), side (menu), PWR | GO/Space (talk), Esc/Enter/arrows (menu) | BOOT/CONFIG (talk) | Yellow (talk), blue (sleep), PWR | OK (talk/confirm), DOWN (menu), UP (up) |
 
-Boards without PSRAM (the ideaspark, Waveshare C6 and Cardputer ADV) don't have room for
-the home-network tunnel. Muse can still reach and control them once the
-control session is up. The Waveshare C6 and Cardputer ADV also can't hold their own voice
-session, so push-to-talk sends your voice note over its control session to the
-Muse it's paired with, and the reply scrolls past as text. It can't show images either: the UI holds a whole image in
-PSRAM, where the ideaspark draws one straight to its screen.
+Boards without PSRAM (the ideaspark, Waveshare C6, Cardputer ADV, and AI
+Passport) don't have room for the home-network tunnel. Muse can still reach
+and control them once the control session is up. The Waveshare C6, Cardputer
+ADV, and AI Passport also can't hold their own voice session, so push-to-talk
+sends the voice note over its control session to the paired Muse and the reply
+appears as text. The AI Passport does not show pushed images or play spoken
+replies. Its Passport-specific pin map, tested budgets, controls, and
+unverified hardware checks are in [`passport.md`](passport.md).
+
+### AI Passport controls and verification
+
+- **OK** confirms pairing and is push-to-talk; **DOWN** opens and moves down
+  the menu; **UP** moves up. Pairing reset is the menu item **Reset pairing**;
+  Passport has no five-second reset gesture.
+- Recorded ladder voltages are UP **0 mV**, DOWN **293 mV**, OK **591 mV**,
+  and released **2965 mV**. They match the configured windows, but the
+  digital levels while each key is pressed are **unverified**; do not claim
+  that any particular key wakes deep sleep.
+- The Passport overlay enables the CJK caption font. Chinese subtitle glyph
+  appearance, rounded corners, colors, and tearing are **unverified by human
+  inspection**.
 
 The SenseCAP Indicator's sensors hang off its RP2040, which passes the
 readings to the ESP32-S3. The D1S and D1Pro have CO2 and tVOC sensors built

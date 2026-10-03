@@ -37,6 +37,12 @@ code for it. Clone the repo rather than reading it on the web, and search it.
 | AIPI Lite | xiaozhi-esp32's [aipi-lite board](https://github.com/78/xiaozhi-esp32/tree/main/main/boards/xorigin/aipi-lite) | `config.h` for pins, then `aipi-lite.cc` and `power_manager.h`. |
 | Home Assistant Voice Preview Edition | [esphome/home-assistant-voice-pe](https://github.com/esphome/home-assistant-voice-pe) | `home-assistant-voice.yaml`, its ESPHome config. |
 
+For FoloToy AI Passport, keep the local `ai-passport` checkout as the pin
+source of truth and read [`passport.md`](passport.md) before changing the
+port. In particular, it is an ESP32-C3 without PSRAM: the port deliberately
+has no tunnel, pushed-image, or spoken-reply feature. The power-off wake path
+and pressed-key digital levels remain unverified on hardware.
+
 For the Cardputer ADV keyboard, also read [m5stack/M5Cardputer](https://github.com/m5stack/M5Cardputer), especially `src/utility/Keyboard/KeyboardReader/TCA8418.cpp` and `src/utility/Adafruit_TCA8418/`.
 
 ## 1. Gather the facts

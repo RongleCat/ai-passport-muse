@@ -13,6 +13,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BOARDS = ROOT / "components" / "muse" / "boards"
+PASSPORT_BOARD = BOARDS / "board_passport.c"
+MUSE_INPUT = ROOT / "components" / "muse" / "muse_input.c"
 
 HARNESS = r"""
 #include <assert.h>
@@ -157,6 +159,31 @@ class PassportBoardHostTests(unittest.TestCase):
 
     def test_cw2017_voltage_and_soc_readiness(self) -> None:
         self.run_harness("cw2017")
+
+
+class PassportBoardContractTests(unittest.TestCase):
+    def test_power_off_waits_for_release_then_gpio_high_before_arming_wake(self) -> None:
+        source = PASSPORT_BOARD.read_text()
+        power_off = source[source.index("static esp_err_t power_off(void)"):]
+
+        self.assertIn("wait_key_released(POWER_OFF_RELEASE_MS)", power_off)
+        self.assertIn("GPIO0 still low after %d ms; not arming wake", power_off)
+        self.assertIn("GPIO0 high after %d ms; arming low wake", power_off)
+        self.assertIn("esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown", power_off)
+        self.assertLess(
+            power_off.index("wait_key_released(POWER_OFF_RELEASE_MS)"),
+            power_off.index("display_pause(true)"),
+        )
+        self.assertLess(
+            power_off.index("GPIO0 still low after %d ms; not arming wake"),
+            power_off.index("esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown"),
+        )
+
+    def test_passport_diagnostic_commands_remain_reachable(self) -> None:
+        source = MUSE_INPUT.read_text()
+
+        for command in ("keylevel", "i2sstat", "i2sreset", "chirp", "caption="):
+            self.assertIn(command, source)
 
 
 if __name__ == "__main__":
