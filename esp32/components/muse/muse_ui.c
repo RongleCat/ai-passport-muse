@@ -46,6 +46,9 @@
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
 #endif
+#if CONFIG_MUSE_CJK_FONT
+LV_FONT_DECLARE(muse_font_cjk_14)
+#endif
 
 static const char *TAG = "muse_ui";
 
@@ -666,7 +669,11 @@ static void build_answer(lv_obj_t *face, int ring_in)
         int d = ring_in - spk_r - 4;   /* just inside the ring, even when swollen */
         spk_x = -(int)sqrtf((float)(d * d - spk_y * spk_y));
     }
+#if CONFIG_MUSE_CJK_FONT
+    const lv_font_t *font = &muse_font_cjk_14;
+#else
     const lv_font_t *font = &lv_font_unscii_16;
+#endif
     int cw = lv_font_get_glyph_width(font, 'M', ' ');
     int pitch = lv_font_get_line_height(font) + CAPTION_LINE_SPACE;
 
@@ -870,11 +877,20 @@ static void build_screen(void)
      * these rows, so there's nowhere to put this without covering the face. */
     lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
+#if CONFIG_MUSE_CJK_FONT
+    s_caption_lbl = make_label(face, &muse_font_cjk_14, COLOR_CAPTION);
+#else
     s_caption_lbl = make_label(face, font_pick(&lv_font_unscii_16, &lv_font_unscii_8), COLOR_CAPTION);
+#endif
     if (s_small) {
         /* Two lines over the bottom of the face, on a dark band so they stay
          * legible. A tall screen has room to keep them above the mic icon. */
+#if CONFIG_MUSE_CJK_FONT
+        int caption_px = lv_font_get_line_height(&muse_font_cjk_14);
+        lv_obj_set_size(s_caption_lbl, s_w, 2 * caption_px + 2 + 4);
+#else
         lv_obj_set_size(s_caption_lbl, s_w, 2 * 8 + 2 + 4);
+#endif
         lv_obj_set_style_pad_ver(s_caption_lbl, 2, 0);
         lv_obj_set_style_text_line_space(s_caption_lbl, 2, 0);
         lv_obj_set_style_bg_color(s_caption_lbl, lv_color_black(), 0);

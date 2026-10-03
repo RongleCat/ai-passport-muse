@@ -133,4 +133,15 @@ menu "Muse"
             boards, including the M5 ones, leave it off. Turn it off once
             the memory budget is known.
 
+    config MUSE_CJK_FONT
+        bool "Chinese subset font for Passport reply text"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            Reply and caption labels use a flash-resident Noto Sans SC
+            subset (GB2312 level 1, its punctuation and fullwidth rows, and
+            printable ASCII). The glyphs are const data in flash, not a RAM
+            cache. Other boards cannot select this, so their firmware stays
+            without the font. The Passport overlay turns it on.
+
 endmenu
