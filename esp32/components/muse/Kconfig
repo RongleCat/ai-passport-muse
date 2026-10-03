@@ -145,4 +145,17 @@ menu "Muse"
             leave this off for a device someone will pair. Other boards do
             not see this option.
 
+    # Debug only. Default off. The serial command is compiled in, but nothing
+    # calls it during boot or pairing. Enable from the gitignored
+    # sdkconfig.local when repeating the XMC flash-suspend check.
+    config MUSE_PASSPORT_NVS_STRESS
+        bool "Passport: serial >nvstest flash stress hook"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            Compiles >nvstest. Typing it writes and commits an NVS blob 200
+            times in a spare namespace, then erases that namespace. It does
+            not run at boot and does not touch pairing keys. Leave it off in
+            firmware someone will pair.
+
 endmenu

@@ -38,6 +38,7 @@ static const char *TAG = "muse_audio";
 static esp_codec_dev_handle_t s_spk;
 static esp_codec_dev_handle_t s_mic;
 static bool s_open;
+static uint32_t s_read_fail;
 static int16_t s_in_stereo[MUSE_AUDIO_CHUNK * CHANNELS];
 static int16_t s_out_stereo[MUSE_AUDIO_CHUNK * CHANNELS];
 
@@ -276,6 +277,7 @@ esp_err_t muse_audio_read(int16_t *mono, size_t frames)
     while (frames) {
         size_t n = frames > MUSE_AUDIO_CHUNK ? MUSE_AUDIO_CHUNK : frames;
         if (esp_codec_dev_read(s_mic, s_in_stereo, n * CHANNELS * sizeof(int16_t)) != ESP_CODEC_DEV_OK) {
+            s_read_fail++;
             return ESP_FAIL;
         }
         for (size_t i = 0; i < n; i++) {
@@ -290,6 +292,11 @@ esp_err_t muse_audio_read(int16_t *mono, size_t frames)
         frames -= n;
     }
     return ESP_OK;
+}
+
+uint32_t muse_audio_read_failures(void)
+{
+    return s_read_fail;
 }
 
 esp_err_t muse_audio_write(const int16_t *mono, size_t frames)

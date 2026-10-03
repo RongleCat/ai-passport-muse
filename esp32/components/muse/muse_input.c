@@ -571,6 +571,9 @@ static void set_face(const char *name)
 }
 
 #if CONFIG_MUSE_BOARD_PASSPORT
+void passport_bench_fit(void);
+void passport_bench_nvs_stress(void);
+
 static void dump_heap(void)
 {
     printf("@heap free=%u min=%u largest=%u\n",
@@ -610,6 +613,8 @@ static void dump_stacks(void)
         { "ble_dc", 2048 },
         { "devinfo", 4096 },
         { "scan", 4096 },
+        { "pair_fit", 4096 },
+        { "nvs_stress", 4096 },
     };
     for (size_t i = 0; i < sizeof(tasks) / sizeof(tasks[0]); i++) {
         TaskHandle_t task = xTaskGetHandle(tasks[i].name);
@@ -660,6 +665,14 @@ static bool console_command(char *line, bool whole)
         esp_err_t err = muse_wifi_scan();
         printf("@scan %s\n", esp_err_to_name(err));
         fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "fit")) {
+        passport_bench_fit();
+        return true;
+    }
+    if (!strcmp(line, "nvstest")) {
+        passport_bench_nvs_stress();
         return true;
     }
 #endif
@@ -737,7 +750,8 @@ static bool console_command(char *line, bool whole)
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
  * (see set_face), and "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py). Passport also takes "stacks", "heap", "park",
- * "unpark" and "scan".
+ * "unpark", "scan", "fit" and "nvstest" (the last one is off unless
+ * CONFIG_MUSE_PASSPORT_NVS_STRESS is set).
  */
 static void serial_task(void *arg)
 {

@@ -53,6 +53,9 @@ void muse_audio_loopback_test(int volume);
 /* Blocking read of `frames` mono samples (mic pair mixed down). */
 esp_err_t muse_audio_read(int16_t *mono, size_t frames);
 
+/* How many muse_audio_read calls have failed since boot. */
+uint32_t muse_audio_read_failures(void);
+
 /* Blocking write of `frames` mono samples to the speaker. */
 esp_err_t muse_audio_write(const int16_t *mono, size_t frames);
 
