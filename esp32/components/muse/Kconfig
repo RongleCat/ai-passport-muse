@@ -158,6 +158,19 @@ menu "Muse"
             not run at boot and does not touch pairing keys. Leave it off in
             firmware someone will pair.
 
+    # Debug only. Default off. >snap is always recognized. The pixel dump is
+    # compiled in only while this is y. Enable it from the gitignored
+    # sdkconfig.local when a host has to reconstruct one panel frame.
+    config MUSE_PASSPORT_FLUSH_CAPTURE
+        bool "Passport: serial >snap flush capture"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            After the rounded-corner mask, print each partial draw buffer
+            that is handed to the panel. >snap invalidates the screen once.
+            With this off the command prints @snap off and the dump is not
+            in the binary. Leave it off on firmware someone will pair.
+
     config MUSE_CJK_FONT
         bool "Chinese subset font for Passport reply text"
         depends on MUSE_BOARD_PASSPORT

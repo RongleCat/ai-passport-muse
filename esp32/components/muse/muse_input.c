@@ -578,6 +578,7 @@ void passport_key_levels(void);
 void passport_gauge_log(void);
 void passport_i2s_stats(const char *tag);
 void passport_i2s_stats_reset(void);
+void passport_flush_snap(void);
 
 static void dump_heap(void)
 {
@@ -724,6 +725,30 @@ static bool console_command(char *line, bool whole)
         fflush(stdout);
         return true;
     }
+    if (!strcmp(line, "snap")) {
+        passport_flush_snap();
+        return true;
+    }
+#if CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE
+    /* Mirror only. Does not call the pairing-confirm button path. */
+    if (!strncmp(line, "link=", 5)) {
+        const char *name = line + 5;
+        muse_link_state_t st;
+        if (!strcmp(name, "confirm")) {
+            st = MUSE_LINK_CONFIRM;
+        } else if (!strcmp(name, "unpaired")) {
+            st = MUSE_LINK_UNPAIRED;
+        } else {
+            printf("@link bad\n");
+            fflush(stdout);
+            return true;
+        }
+        muse_link_set_state(st);
+        printf("@link %s\n", muse_link_state_name(st));
+        fflush(stdout);
+        return true;
+    }
+#endif
 #endif
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
@@ -801,7 +826,9 @@ static bool console_command(char *line, bool whole)
  * and tools/muse/chat.py). Passport also takes "stacks", "heap", "park",
  * "unpark", "scan", "fit", "nvstest" (off unless
  * CONFIG_MUSE_PASSPORT_NVS_STRESS is set), "keylevel", "gauge", "usb",
- * "i2sstat", "i2sreset", "chirp", "selftest", and "caption=".
+ * "i2sstat", "i2sreset", "chirp", "selftest", "caption=", and "snap"
+ * (@snap off unless CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE). That option also
+ * accepts "link=confirm" and "link=unpaired", which only move the UI mirror.
  */
 static void serial_task(void *arg)
 {

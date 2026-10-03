@@ -51,9 +51,13 @@
 #include "esp_lv_adapter.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#if CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE
+#include "driver/usb_serial_jtag.h"
+#endif
 
 #include "muse_audio.h"
 #include "muse_board.h"
@@ -227,6 +231,244 @@ static void rounded_flush_event(lv_event_t *event)
         }
     }
 }
+
+#if CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE
+/*
+ * >snap dumps the next refresh after this mask. FLUSH_FINISH is after
+ * esp_lv_adapter's lv_draw_sw_rgb565_swap (PANEL_IF_OTHER, RGB565), so the
+ * bytes are packed big-endian RGB565, high byte first: the same buffer
+ * esp_lcd_panel_draw_bitmap sends. LV_COLOR_16_SWAP is off, so that swap
+ * happens once. Zero stays zero. Panel INVON is not applied here.
+ * Base64 is written in 240-character stack chunks through the USB Serial/JTAG
+ * driver. A full TX ring blocks and yields. stdout's FIFO path would spin
+ * and then drop bytes. One tick between strips lets Wi-Fi and BLE run; the
+ * task watchdog is not enabled on this board.
+ */
+#define SNAP_HEAP_FLOOR 12288u
+#define SNAP_ARM_WAIT_US 1500000
+
+enum {
+    SNAP_IDLE = 0,
+    SNAP_ARMED,
+    SNAP_RUN,
+};
+
+static lv_display_t *s_snap_disp;
+static volatile int s_snap;
+static volatile uint32_t s_snap_flushes;
+static volatile uint32_t s_snap_bytes;
+static volatile size_t s_snap_min0;
+static volatile int64_t s_snap_t0;
+
+/* Blocking driver write. stdout's no-driver path spins on a 64-byte FIFO
+ * and drops what does not land within 50 ms. The driver ring yields. */
+static bool snap_tx(const void *buf, size_t n)
+{
+    if (n == 0) {
+        return true;
+    }
+    return usb_serial_jtag_write_bytes(buf, n, pdMS_TO_TICKS(2000)) == (int)n;
+}
+
+static bool write_b64_locked(const uint8_t *raw, size_t n)
+{
+    static const char tab[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char out[240];
+    size_t o = 0;
+    size_t i = 0;
+    while (i + 3 <= n) {
+        unsigned v = ((unsigned)raw[i] << 16) | ((unsigned)raw[i + 1] << 8) | raw[i + 2];
+        out[o++] = tab[(v >> 18) & 63];
+        out[o++] = tab[(v >> 12) & 63];
+        out[o++] = tab[(v >> 6) & 63];
+        out[o++] = tab[v & 63];
+        i += 3;
+        if (o == sizeof(out)) {
+            if (!snap_tx(out, o)) {
+                return false;
+            }
+            o = 0;
+        }
+    }
+    if (i < n) {
+        unsigned a = raw[i];
+        unsigned b = (i + 1 < n) ? raw[i + 1] : 0;
+        unsigned v = (a << 16) | (b << 8);
+        out[o++] = tab[(v >> 18) & 63];
+        out[o++] = tab[(v >> 12) & 63];
+        out[o++] = (i + 1 < n) ? tab[(v >> 6) & 63] : '=';
+        out[o++] = '=';
+    }
+    if (o && !snap_tx(out, o)) {
+        return false;
+    }
+    return true;
+}
+
+static bool snap_heap_ok(void)
+{
+    size_t free_b = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t min_b = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    if (free_b >= SNAP_HEAP_FLOOR && (min_b >= SNAP_HEAP_FLOOR || min_b >= s_snap_min0)) {
+        return true;
+    }
+    s_snap = SNAP_IDLE;
+    flockfile(stdout);
+    fprintf(stdout, "@snap abort heap free=%u min=%u floor=%u\n",
+            (unsigned)free_b, (unsigned)min_b, (unsigned)SNAP_HEAP_FLOOR);
+    fflush(stdout);
+    funlockfile(stdout);
+    return false;
+}
+
+static void flush_capture_event(lv_event_t *event)
+{
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_REFR_START) {
+        if (s_snap == SNAP_ARMED) {
+            s_snap = SNAP_RUN;
+            s_snap_flushes = 0;
+            s_snap_bytes = 0;
+        }
+        return;
+    }
+    if (code == LV_EVENT_REFR_READY) {
+        if (s_snap != SNAP_RUN) {
+            return;
+        }
+        if (s_snap_flushes == 0) {
+            if (esp_timer_get_time() - s_snap_t0 > SNAP_ARM_WAIT_US) {
+                s_snap = SNAP_IDLE;
+                flockfile(stdout);
+                fprintf(stdout, "@snap abort empty\n");
+                fflush(stdout);
+                funlockfile(stdout);
+            } else {
+                s_snap = SNAP_ARMED;
+            }
+            return;
+        }
+        size_t free_b = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t min_b = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+        uint32_t flushes = s_snap_flushes;
+        uint32_t bytes = s_snap_bytes;
+        size_t min0 = s_snap_min0;
+        s_snap = SNAP_IDLE;
+        flockfile(stdout);
+        fprintf(stdout, "@snap done flushes=%u bytes=%u free=%u min=%u min0=%u\n",
+                (unsigned)flushes, (unsigned)bytes,
+                (unsigned)free_b, (unsigned)min_b, (unsigned)min0);
+        fflush(stdout);
+        funlockfile(stdout);
+        return;
+    }
+    if (code != LV_EVENT_FLUSH_FINISH || s_snap != SNAP_RUN) {
+        return;
+    }
+    if (!snap_heap_ok()) {
+        return;
+    }
+    const lv_area_t *area = lv_event_get_param(event);
+    lv_display_t *disp = lv_event_get_target(event);
+    lv_draw_buf_t *draw = lv_display_get_buf_active(disp);
+    if (!area || !draw || !draw->data ||
+        lv_display_get_color_format(disp) != LV_COLOR_FORMAT_RGB565) {
+        s_snap = SNAP_IDLE;
+        flockfile(stdout);
+        fprintf(stdout, "@snap abort buf\n");
+        fflush(stdout);
+        funlockfile(stdout);
+        return;
+    }
+    int32_t x1 = area->x1;
+    int32_t y1 = area->y1;
+    int32_t x2 = area->x2;
+    int32_t y2 = area->y2;
+    if (x1 < 0 || y1 < 0 || x2 < x1 || y2 < y1 || x2 >= LCD_W || y2 >= LCD_H) {
+        s_snap = SNAP_IDLE;
+        flockfile(stdout);
+        fprintf(stdout, "@snap abort area %ld %ld %ld %ld\n",
+                (long)x1, (long)y1, (long)x2, (long)y2);
+        fflush(stdout);
+        funlockfile(stdout);
+        return;
+    }
+    size_t width = (size_t)(x2 - x1 + 1);
+    size_t height = (size_t)(y2 - y1 + 1);
+    size_t nbytes = width * height * 2;
+    if (nbytes == 0 || nbytes > draw->data_size) {
+        s_snap = SNAP_IDLE;
+        flockfile(stdout);
+        fprintf(stdout, "@snap abort span %u buf %u\n",
+                (unsigned)nbytes, (unsigned)draw->data_size);
+        fflush(stdout);
+        funlockfile(stdout);
+        return;
+    }
+    /* compact_stride_to_packed already pulled rows together. Index packed.
+     * Hold flockfile so an ESP_LOG line cannot split the base64. The delay
+     * is after the unlock. */
+    char hdr[48];
+    int hdr_n = snprintf(hdr, sizeof(hdr), "@px %ld %ld %ld %ld ",
+                         (long)x1, (long)y1, (long)x2, (long)y2);
+    bool wrote = hdr_n > 0 && hdr_n < (int)sizeof(hdr);
+    flockfile(stdout);
+    if (wrote) {
+        wrote = snap_tx(hdr, (size_t)hdr_n) && write_b64_locked(draw->data, nbytes) &&
+                snap_tx("\n", 1);
+    }
+    if (wrote) {
+        wrote = usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(2000)) == ESP_OK;
+    }
+    funlockfile(stdout);
+    if (!wrote) {
+        s_snap = SNAP_IDLE;
+        printf("@snap abort tx\n");
+        fflush(stdout);
+        return;
+    }
+    s_snap_flushes++;
+    s_snap_bytes += (uint32_t)nbytes;
+    vTaskDelay(1);
+}
+
+void passport_flush_snap(void)
+{
+    if (!s_snap_disp) {
+        printf("@snap nodisp\n");
+        fflush(stdout);
+        return;
+    }
+    if (s_snap != SNAP_IDLE) {
+        printf("@snap busy\n");
+        fflush(stdout);
+        return;
+    }
+    if (esp_lv_adapter_lock(2000) != ESP_OK) {
+        printf("@snap lock\n");
+        fflush(stdout);
+        return;
+    }
+    s_snap_flushes = 0;
+    s_snap_bytes = 0;
+    s_snap_min0 = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    s_snap_t0 = esp_timer_get_time();
+    s_snap = SNAP_ARMED;
+    lv_obj_invalidate(lv_screen_active());
+    lv_obj_invalidate(lv_layer_top());
+    esp_lv_adapter_unlock();
+    printf("@snap armed free=%u min=%u\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)s_snap_min0);
+    fflush(stdout);
+}
+#else
+void passport_flush_snap(void)
+{
+    printf("@snap off\n");
+    fflush(stdout);
+}
+#endif
 
 static esp_err_t lcd_set_safe_levels(void)
 {
@@ -502,6 +744,12 @@ static lv_display_t *display_start(lv_indev_t **touch)
         return NULL;
     }
     lv_display_add_event_cb(disp, rounded_flush_event, LV_EVENT_FLUSH_START, NULL);
+#if CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE
+    s_snap_disp = disp;
+    lv_display_add_event_cb(disp, flush_capture_event, LV_EVENT_FLUSH_FINISH, NULL);
+    lv_display_add_event_cb(disp, flush_capture_event, LV_EVENT_REFR_START, NULL);
+    lv_display_add_event_cb(disp, flush_capture_event, LV_EVENT_REFR_READY, NULL);
+#endif
     esp_lv_adapter_unlock();
     if (esp_lv_adapter_start() != ESP_OK) {
         return NULL;

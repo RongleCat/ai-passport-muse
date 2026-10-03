@@ -16,6 +16,62 @@ BOARDS = ROOT / "components" / "muse" / "boards"
 PASSPORT_BOARD = BOARDS / "board_passport.c"
 MUSE_INPUT = ROOT / "components" / "muse" / "muse_input.c"
 
+
+def _split_config_if(source: str, symbol: str) -> tuple[list[str], list[str]]:
+    lines = source.splitlines()
+    if_bodies: list[str] = []
+    else_bodies: list[str] = []
+    index = 0
+    needle = f"#if {symbol}"
+    while index < len(lines):
+        if lines[index].strip() != needle:
+            index += 1
+            continue
+        depth = 1
+        arm: list[str] = []
+        other: list[str] = []
+        dest = arm
+        index += 1
+        while index < len(lines) and depth:
+            stripped = lines[index].strip()
+            if stripped.startswith("#if"):
+                depth += 1
+                dest.append(lines[index])
+            elif stripped.startswith("#endif"):
+                depth -= 1
+                if depth:
+                    dest.append(lines[index])
+            elif depth == 1 and stripped.startswith("#else"):
+                dest = other
+            else:
+                dest.append(lines[index])
+            index += 1
+        if_bodies.append("\n".join(arm))
+        else_bodies.append("\n".join(other))
+    return if_bodies, else_bodies
+
+
+def _remove_config_if(source: str, symbol: str) -> str:
+    lines = source.splitlines()
+    kept: list[str] = []
+    index = 0
+    needle = f"#if {symbol}"
+    while index < len(lines):
+        if lines[index].strip() != needle:
+            kept.append(lines[index])
+            index += 1
+            continue
+        depth = 1
+        index += 1
+        while index < len(lines) and depth:
+            stripped = lines[index].strip()
+            if stripped.startswith("#if"):
+                depth += 1
+            elif stripped.startswith("#endif"):
+                depth -= 1
+            index += 1
+    return "\n".join(kept)
+
 HARNESS = r"""
 #include <assert.h>
 #include <stdint.h>
@@ -182,8 +238,35 @@ class PassportBoardContractTests(unittest.TestCase):
     def test_passport_diagnostic_commands_remain_reachable(self) -> None:
         source = MUSE_INPUT.read_text()
 
-        for command in ("keylevel", "i2sstat", "i2sreset", "chirp", "caption="):
+        for command in ("keylevel", "i2sstat", "i2sreset", "chirp", "caption=", "snap"):
             self.assertIn(command, source)
+
+    def test_flush_capture_defaults_off_and_is_compiled_out(self) -> None:
+        kconfig = (ROOT / "components" / "muse" / "Kconfig").read_text()
+        start = kconfig.index("config MUSE_PASSPORT_FLUSH_CAPTURE")
+        block = kconfig[start:kconfig.index("config MUSE_CJK_FONT", start)]
+        self.assertIn("depends on MUSE_BOARD_PASSPORT", block)
+        self.assertIn("default n", block)
+
+        if_bodies, else_bodies = _split_config_if(
+            PASSPORT_BOARD.read_text(), "CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE")
+        self.assertTrue(if_bodies)
+        self.assertIn("@px %ld %ld %ld %ld ", "\n".join(if_bodies))
+        self.assertIn("@snap done flushes=", "\n".join(if_bodies))
+        self.assertIn("@snap off", "\n".join(else_bodies))
+        outside = _remove_config_if(
+            PASSPORT_BOARD.read_text(), "CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE")
+        self.assertNotIn("@px", outside)
+        self.assertNotIn("@snap done", outside)
+        self.assertNotIn("@snap abort", outside)
+
+        link_if, _link_else = _split_config_if(
+            MUSE_INPUT.read_text(), "CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE")
+        self.assertIn('!strcmp(name, "confirm")', "\n".join(link_if))
+        self.assertNotIn('!strcmp(name, "confirm")', _remove_config_if(
+            MUSE_INPUT.read_text(), "CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE"))
+        overlay = (ROOT / "devices" / "sdkconfig.muse-passport").read_text()
+        self.assertNotIn("MUSE_PASSPORT_FLUSH_CAPTURE", overlay)
 
 
 if __name__ == "__main__":
