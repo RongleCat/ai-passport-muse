@@ -108,8 +108,28 @@ free). I2S remains 4 descriptors × 160 frames: 10 ms per buffer and roughly
   BLE pairing.
 - `MUSE_PASSPORT_NVS_STRESS` defaults to disabled. With it disabled, `>nvstest`
   reports `@nvstest off`; only enable it in an ignored local configuration.
+- `MUSE_PASSPORT_FLUSH_CAPTURE` defaults to disabled. `>snap` is always
+  recognized. With the option off it prints `@snap off` and the pixel dump is
+  not in the binary. Enable it only in the ignored `build-passport/sdkconfig.local`
+  for a measurement build. `>snap` invalidates the active screen and the top
+  layer, then on `LV_EVENT_FLUSH_FINISH` (after the rounded mask and after
+  `esp_lv_adapter`'s `lv_draw_sw_rgb565_swap`) prints each partial buffer as
+  `@px x1 y1 x2 y2 <base64>` and finishes with `@snap done`. Coordinates are
+  inclusive. The base64 is packed big-endian RGB565, high byte first: the
+  bytes `esp_lcd_panel_draw_bitmap` receives. `LV_COLOR_16_SWAP` is not set,
+  so that swap happens once. Pixel value 0 stays 0. Panel `INVON` is not
+  undone. The capture allocates no frame buffer; base64 is encoded in
+  240-character stack chunks and written with `usb_serial_jtag_write_bytes`
+  (a full TX ring blocks and yields). The task waits one tick between strips.
+  If internal free memory is below 12 KiB, or the historical minimum falls
+  below 12 KiB during the capture, it prints `@snap abort heap` and stops.
+  The host tool is `tools/muse/passport_snap.py`. While the option is on,
+  `>link=confirm` and `>link=unpaired` set only the Muse link mirror used by
+  the pairing card. They do not complete pairing, and they are compiled out
+  with the capture.
 - Console commands include `>heap`, `>keylevel`, `>i2sstat`, `>i2sreset`,
-  `>caption=<text>`, `>chirp`, `>selftest`, `>gauge`, `>usb`, and `>power`.
+  `>caption=<text>`, `>chirp`, `>selftest`, `>gauge`, `>usb`, `>power`, and
+  `>snap`.
   `>keylevel` temporarily switches GPIO0 from ADC to a digital input and then
   restores ADC; do not treat `gpio_during_adc` as a wake-level result.
 - Key logs are rate-limited to about 300 ms; a later line can include
@@ -119,8 +139,10 @@ free). I2S remains 4 descriptors × 160 frames: 10 ms per buffer and roughly
 
 - Full phone pairing, the paired TLS/WebSocket heap, and repeated
   push-to-talk sessions are **unverified** on the final image.
-- The menu path was hardware-tested, but human inspection of Chinese glyphs,
-  rounded corners, colors, and display tearing is **unverified**.
+- The menu path was hardware-tested. T12 captured the pixels handed to the
+  panel, including CJK glyph bitmaps, layout, and the rounded-corner mask.
+  Human inspection of the glass — panel INVON colors, the physical bezel,
+  tearing, and backlight brightness — is **unverified**.
 - Screen pause/resume was tested while USB was connected; USB held a
   no-light-sleep lock, so actual battery-powered light sleep is **unverified**.
 - Deep sleep from menu Power off and long-press DOWN is **unverified**. Before
