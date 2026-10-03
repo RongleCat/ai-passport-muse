@@ -24,6 +24,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
@@ -33,6 +34,7 @@
 #include "muse_board.h"
 #include "muse_chat.h"
 #include "muse_input.h"
+#include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
 #include "muse_state.h"
@@ -68,6 +70,41 @@ static const char *TAG = "muse_voice";
 #define ACK_WAIT_US (30LL * 1000000)            /* asleep, waiting for the VM to have a note */
 
 static QueueHandle_t s_queue;
+
+#if CONFIG_MUSE_BOARD_PASSPORT
+/* RUNNING is set before the task exists so two callers can't both create it.
+ * EXITING covers teardown. STOPPED is the only state muse_voice_start()
+ * will leave. The voice stack is internal RAM on this board. vTaskDelete()
+ * does not free a stack created with xTaskCreatePinnedToCoreWithCaps. */
+enum { VOICE_STOPPED = 0, VOICE_RUNNING, VOICE_EXITING };
+static volatile int s_state;
+static volatile bool s_hold;
+static volatile bool s_force_hold;
+static volatile bool s_report_park;
+static bool s_settle_pending;
+static TickType_t s_settle_at;
+static TickType_t s_next_start;
+static bool s_selftested;
+static portMUX_TYPE s_voice_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool hold_wanted(void)
+{
+    if (s_force_hold) {
+        return true;
+    }
+    muse_link_state_t st = muse_link_state();
+    return st == MUSE_LINK_PAIRING || st == MUSE_LINK_CONFIRM;
+}
+
+static void log_heap(const char *label)
+{
+    ESP_LOGI(TAG, "HEAP %s free=%u min=%u largest=%u", label,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+#endif
+
 static volatile bool s_monitor;
 static volatile float s_monitor_db = -100.0f;
 static volatile bool s_chirp;
@@ -502,6 +539,26 @@ static void drop_rec(void)
     s_rec = NULL;
 }
 
+#if CONFIG_MUSE_BOARD_PASSPORT
+/* Drops the mic path and this task. vTaskDeleteWithCaps frees the stack. */
+static void park_and_exit(void)
+{
+    s_state = VOICE_EXITING;
+    s_resting = false;
+    free(s_pre);
+    s_pre = NULL;
+    s_pre_fill = 0;
+    s_pre_next = 0;
+    drop_rec();
+    muse_audio_release();
+    log_heap("audio parked");
+    s_report_park = true;
+    s_state = VOICE_STOPPED;
+    /* WithCaps stacks are not freed by vTaskDelete(); idle never sees them. */
+    vTaskDeleteWithCaps(NULL);
+}
+#endif
+
 #if HOLD_NOTES
 /* True if a press is queued, left there for the loop; releases ahead of it are dropped. */
 static bool press_waiting(void)
@@ -784,8 +841,20 @@ static bool can_record(void)
 static void voice_task(void *arg)
 {
     bool pending_down = false;
+#if CONFIG_MUSE_BOARD_PASSPORT
+    if (!s_selftested) {
+        muse_audio_selftest();
+        s_selftested = true;
+    }
+#else
     muse_audio_selftest();
+#endif
     for (;;) {
+#if CONFIG_MUSE_BOARD_PASSPORT
+        if (s_hold) {
+            park_and_exit();
+        }
+#endif
         bool wake = false;
         if (!pending_down) {
             muse_input_event_t ev;
@@ -884,19 +953,82 @@ static void voice_task(void *arg)
 
 esp_err_t muse_voice_start(QueueHandle_t queue)
 {
-    s_queue = queue;
-    s_pre = heap_caps_malloc(PRE_CHUNKS * sizeof(pre_chunk_t), MUSE_BIG_CAPS);
+    if (queue) {
+        s_queue = queue;
+    }
+#if CONFIG_MUSE_BOARD_PASSPORT
+    portENTER_CRITICAL(&s_voice_mux);
+    if (s_state != VOICE_STOPPED || s_hold) {
+        portEXIT_CRITICAL(&s_voice_mux);
+        return ESP_OK;
+    }
+    s_state = VOICE_RUNNING;
+    portEXIT_CRITICAL(&s_voice_mux);
+#endif
+    if (!s_pre) {
+        s_pre = heap_caps_malloc(PRE_CHUNKS * sizeof(pre_chunk_t), MUSE_BIG_CAPS);
+    }
     if (!s_pre || muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");
+#if CONFIG_MUSE_BOARD_PASSPORT
+        s_state = VOICE_STOPPED;
+#endif
         return ESP_FAIL;
     }
-    /* Stack in PSRAM if there is any (this task never writes flash) to spare internal RAM for Wi-Fi/BLE. */
+    /* Stack in PSRAM if there is any (this task never writes flash) to spare internal RAM for Wi-Fi/BLE.
+     * Passport has no PSRAM, so this 6144 is internal and is freed again while pairing. */
     if (xTaskCreatePinnedToCoreWithCaps(voice_task, "muse_voice", 6144, NULL, 6, NULL, MUSE_AUDIO_CORE,
                                         MUSE_BIG_CAPS) != pdPASS) {
+#if CONFIG_MUSE_BOARD_PASSPORT
+        s_state = VOICE_STOPPED;
+#endif
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+void muse_voice_service(void)
+{
+#if CONFIG_MUSE_BOARD_PASSPORT
+    bool hold = hold_wanted();
+    s_hold = hold;
+    if (s_state == VOICE_RUNNING) {
+        if (hold) {
+            muse_state_nudge();
+        }
+        return;
+    }
+    if (s_state != VOICE_STOPPED) {
+        return;
+    }
+    if (s_report_park) {
+        s_report_park = false;
+        /* The helper that frees a WithCaps stack runs after this returns. */
+        s_settle_pending = true;
+        s_settle_at = xTaskGetTickCount() + pdMS_TO_TICKS(50);
+    }
+    if (s_settle_pending && (int32_t)(xTaskGetTickCount() - s_settle_at) >= 0) {
+        s_settle_pending = false;
+        log_heap("pairing hold settled");
+    }
+    if (!hold && s_queue && (int32_t)(xTaskGetTickCount() - s_next_start) >= 0) {
+        if (muse_voice_start(s_queue) != ESP_OK) {
+            s_next_start = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
+            ESP_LOGW(TAG, "voice restart failed");
+        }
+    }
+#endif
+}
+
+void muse_voice_force_hold(bool hold)
+{
+#if CONFIG_MUSE_BOARD_PASSPORT
+    s_force_hold = hold;
+    muse_voice_service();
+#else
+    (void)hold;
+#endif
 }
 
 void muse_voice_set_monitor(bool on)

@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -1464,6 +1465,17 @@ static void frame_tick(lv_timer_t *timer)
     if (s_image_dsc.data) {
         return;   /* the image covers the face */
     }
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Pairing already has the chrome above. Skip the pixel face so the draw
+     * thread does not allocate while the handshake and the Wi-Fi scan run.
+     * The menu timer still ran. */
+    {
+        muse_link_state_t link = muse_link_state();
+        if (link == MUSE_LINK_PAIRING || link == MUSE_LINK_CONFIRM) {
+            return;
+        }
+    }
+#endif
     if (s_tv && lv_obj_get_scroll_x(s_tv) != 0) {
         /* Off screen, or sliding to or from settings: hold still so the
          * slide gets the whole frame time. */

@@ -37,6 +37,10 @@ esp_err_t muse_audio_init(int volume, int mic_gain_db);
  * with the saved volume and mic gain. Reads and writes need it on. */
 void muse_audio_power(bool on);
 
+/* Closes the codecs and, where the board implements audio_release(), frees
+ * the codec objects and the I2S DMA. muse_audio_init() builds them again. */
+void muse_audio_release(void);
+
 void muse_audio_set_volume(int volume);          /* 0..100 */
 void muse_audio_set_mic_gain(int db);            /* 0..MUSE_MIC_GAIN_MAX */
 

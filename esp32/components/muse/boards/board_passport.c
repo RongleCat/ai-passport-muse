@@ -38,6 +38,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_check.h"
+#include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
@@ -133,8 +134,14 @@ static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static bool s_bl_ready;
 static i2s_chan_handle_t s_tx, s_rx;
+static const audio_codec_data_if_t *s_data_if;
 static const audio_codec_ctrl_if_t *s_ctrl;
+static const audio_codec_gpio_if_t *s_gpio_if;
+static const audio_codec_if_t *s_codec;
 static esp_codec_dev_handle_t s_spk, s_mic;
+
+static void audio_release(void);
+static esp_err_t i2s_quiesce(void);
 static passport_key_debounce_t s_keys;
 
 static int32_t clamp_radius(int32_t radius)
@@ -438,9 +445,11 @@ static lv_display_t *display_start(lv_indev_t **touch)
     esp_lv_adapter_config_t adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
     adapter_cfg.task_core_id = MUSE_UI_CORE;
     /* One core: keep drawing below Wi-Fi and app_main, as on the C6 board.
-     * Default stack is 8 KB; the Passport boot only needs the flush path. */
+     * The adapter default is 8 KB. 4 KB overflowed the hardware stack guard
+     * in lv_event_send while the menu built its widgets (the guard span was
+     * a 4096-byte stack). ">stacks" prints the watermark after the fact. */
     adapter_cfg.task_priority = 1;
-    adapter_cfg.task_stack_size = 4096;
+    adapter_cfg.task_stack_size = 8192;
     if (esp_lv_adapter_init(&adapter_cfg) != ESP_OK) {
         return NULL;
     }
@@ -537,7 +546,7 @@ static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t 
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx), TAG, "i2s rx on");
 
     audio_codec_i2s_cfg_t i2s_cfg = { .port = I2S_NUM_0, .rx_handle = s_rx, .tx_handle = s_tx };
-    const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_cfg);
+    s_data_if = audio_codec_new_i2s_data(&i2s_cfg);
     /* 0x30 is the 8-bit form of the 7-bit address 0x18. */
     audio_codec_i2c_cfg_t i2c_cfg = {
         .port = I2C_NUM_0,
@@ -545,12 +554,12 @@ static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t 
         .bus_handle = s_i2c,
     };
     s_ctrl = audio_codec_new_i2c_ctrl(&i2c_cfg);
-    const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
-    ESP_RETURN_ON_FALSE(data_if && s_ctrl && gpio_if, ESP_ERR_NO_MEM, TAG, "codec interfaces");
+    s_gpio_if = audio_codec_new_gpio();
+    ESP_RETURN_ON_FALSE(s_data_if && s_ctrl && s_gpio_if, ESP_ERR_NO_MEM, TAG, "codec interfaces");
 
     es8311_codec_cfg_t es_cfg = {
         .ctrl_if = s_ctrl,
-        .gpio_if = gpio_if,
+        .gpio_if = s_gpio_if,
         .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
         .pa_pin = GPIO_NUM_NC,
         .use_mclk = true,
@@ -558,11 +567,11 @@ static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t 
         .no_dac_ref = true, /* mono mic must use the ADC, not the DAC reference */
         .mclk_div = 256,
     };
-    const audio_codec_if_t *codec = es8311_codec_new(&es_cfg);
-    ESP_RETURN_ON_FALSE(codec, ESP_FAIL, TAG, "ES8311 not responding");
+    s_codec = es8311_codec_new(&es_cfg);
+    ESP_RETURN_ON_FALSE(s_codec, ESP_FAIL, TAG, "ES8311 not responding");
 
-    esp_codec_dev_cfg_t out_cfg = { .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = codec, .data_if = data_if };
-    esp_codec_dev_cfg_t in_cfg = { .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = codec, .data_if = data_if };
+    esp_codec_dev_cfg_t out_cfg = { .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = s_codec, .data_if = s_data_if };
+    esp_codec_dev_cfg_t in_cfg = { .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = s_codec, .data_if = s_data_if };
     s_spk = esp_codec_dev_new(&out_cfg);
     s_mic = esp_codec_dev_new(&in_cfg);
     *spk = s_spk;
@@ -638,6 +647,49 @@ static esp_err_t read_power(muse_power_t *out)
         .usb = false,
     };
     return ESP_OK;
+}
+
+/* Frees the codec objects and the I2S DMA. Pairing parks the mic this way;
+ * muse_audio_init() builds the same path again afterwards. */
+static void audio_release(void)
+{
+    size_t before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    if (s_spk) {
+        esp_codec_dev_delete(s_spk);
+        s_spk = NULL;
+    }
+    if (s_mic) {
+        esp_codec_dev_delete(s_mic);
+        s_mic = NULL;
+    }
+    if (s_codec) {
+        audio_codec_delete_codec_if(s_codec);
+        s_codec = NULL;
+    }
+    if (s_ctrl) {
+        audio_codec_delete_ctrl_if(s_ctrl);
+        s_ctrl = NULL;
+    }
+    if (s_gpio_if) {
+        audio_codec_delete_gpio_if(s_gpio_if);
+        s_gpio_if = NULL;
+    }
+    if (s_data_if) {
+        audio_codec_delete_data_if(s_data_if);
+        s_data_if = NULL;
+    }
+    i2s_quiesce();
+    if (s_tx) {
+        i2s_del_channel(s_tx);
+        s_tx = NULL;
+    }
+    if (s_rx) {
+        i2s_del_channel(s_rx);
+        s_rx = NULL;
+    }
+    size_t after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "audio release returned %u bytes (free %u -> %u)",
+             (unsigned)(after - before), (unsigned)before, (unsigned)after);
 }
 
 static esp_err_t i2s_quiesce(void)
@@ -799,6 +851,7 @@ static const muse_board_t s_board = {
     .panel_sleep = panel_sleep,
     .display_pause = display_pause,
     .audio_init = audio_init,
+    .audio_release = audio_release,
     .mic_slot = 0,
     .poll_buttons = poll_buttons,
     .wait_buttons = wait_buttons,

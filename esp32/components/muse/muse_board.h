@@ -84,6 +84,9 @@ typedef struct {
 
     /* Codec handles for one duplex, 2-slot I2S bus, not yet opened. */
     esp_err_t (*audio_init)(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t *mic);
+    /* Optional. Frees those objects and the I2S DMA so a later audio_init()
+     * can build them again. NULL keeps the codecs for the whole boot. */
+    void (*audio_release)(void);
     int mic_slot;           /* slot carrying the mic (0/1), or -1 to mix both */
     void (*set_mic_gain)(esp_codec_dev_handle_t mic, int db);   /* NULL: esp_codec_dev_set_in_gain */
 

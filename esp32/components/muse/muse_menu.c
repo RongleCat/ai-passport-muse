@@ -20,10 +20,13 @@
 #include <string.h>
 
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
+#include "sdkconfig.h"
 
 #include "muse_battery.h"
 #include "muse_ble.h"
@@ -334,6 +337,31 @@ static void refresh(void)
     }
 }
 
+#if CONFIG_MUSE_BOARD_PASSPORT
+static const char *view_name(view_t view)
+{
+    switch (view) {
+    case VIEW_LIST: return "list";
+    case VIEW_STATUS: return "status";
+    case VIEW_BATTERY: return "battery";
+    case VIEW_POWER: return "power";
+    case VIEW_RESET: return "reset";
+    default: return "closed";
+    }
+}
+
+/* Runs on the LVGL task. The watermark is the least free since that task
+ * started, so a later ">stacks" still sees the worst menu. */
+static void log_menu_stack(const char *where)
+{
+    unsigned free_b = (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t));
+    ESP_LOGI(TAG, "stack %s task=%s free=%u heap_free=%u heap_min=%u", where,
+             pcTaskGetName(NULL), free_b,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+}
+#endif
+
 static void show(view_t view)
 {
     s_view = view;
@@ -373,6 +401,9 @@ static void show(view_t view)
         break;
     }
     refresh();
+#if CONFIG_MUSE_BOARD_PASSPORT
+    log_menu_stack(view_name(view));
+#endif
 }
 
 static void open_menu(void)
@@ -625,4 +656,7 @@ void muse_menu_close(void)
     s_view = VIEW_CLOSED;
     s_open = false;
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
+#if CONFIG_MUSE_BOARD_PASSPORT
+    log_menu_stack("close");
+#endif
 }

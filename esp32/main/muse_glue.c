@@ -38,6 +38,7 @@
 
 #include "muse_ble.h"
 #include "muse_board.h"
+#include "muse_voice.h"
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
@@ -701,7 +702,25 @@ void muse_glue_led_state(led_state_t state) {
             st = MUSE_LINK_ERROR;
             break;
     }
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Provisioning reports Wi-Fi and auth through the same LED hook, including
+     * the confirmed-session scan that previously drove the heap to ~10 KB.
+     * Those updates must not drop PAIRING/CONFIRM, or the mic comes back in
+     * the middle of that scan. Advertising, unpaired, and error still clear it. */
+    {
+        muse_link_state_t prev = muse_link_state();
+        if ((prev == MUSE_LINK_PAIRING || prev == MUSE_LINK_CONFIRM) &&
+            (st == MUSE_LINK_CONNECTING || st == MUSE_LINK_ONLINE ||
+             st == MUSE_LINK_OFFLINE)) {
+            st = prev;
+        }
+    }
+#endif
     muse_link_set_state(st);
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Park the mic as soon as the app connects, before the handshake allocs. */
+    muse_voice_service();
+#endif
     // Pairing, provisioning and unpair all move the LED; pick up their config.
     keeper_kick(KEEP_RELOAD);
 }

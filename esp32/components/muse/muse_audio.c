@@ -58,8 +58,32 @@ static esp_err_t open_codecs(void)
     return ESP_OK;
 }
 
+void muse_audio_release(void)
+{
+    if (!s_spk && !s_mic) {
+        if (muse_board->audio_release) {
+            muse_board->audio_release();
+        }
+        s_open = false;
+        return;
+    }
+    muse_audio_power(false);
+    if (muse_board->audio_release) {
+        muse_board->audio_release();
+    }
+    s_spk = NULL;
+    s_mic = NULL;
+    s_open = false;
+}
+
 esp_err_t muse_audio_init(int volume, int mic_gain_db)
 {
+    if (s_open && s_spk && s_mic) {
+        return ESP_OK;
+    }
+    if (s_spk || s_mic) {
+        muse_audio_release();
+    }
     ESP_RETURN_ON_ERROR(muse_board->audio_init(&s_spk, &s_mic), TAG, "codec init failed");
     ESP_RETURN_ON_FALSE(s_spk && s_mic, ESP_FAIL, TAG, "codec init failed");
 

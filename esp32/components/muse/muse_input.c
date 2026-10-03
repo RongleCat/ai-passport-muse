@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "esp_attr.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/task.h"
@@ -433,6 +434,11 @@ static void input_task(void *arg)
             s_power_off_requested = false;
             power_off();
         }
+#if CONFIG_MUSE_BOARD_PASSPORT
+        /* Brings the mic back if a pair attempt ended while the task was
+         * still exiting. Also the ">park" / ">unpark" bench switch. */
+        muse_voice_service();
+#endif
 
         TickType_t now = xTaskGetTickCount();
         if (now - checked >= pdMS_TO_TICKS(SLEEP_CHECK_MS)) {
@@ -564,12 +570,99 @@ static void set_face(const char *name)
     fflush(stdout);
 }
 
+#if CONFIG_MUSE_BOARD_PASSPORT
+static void dump_heap(void)
+{
+    printf("@heap free=%u min=%u largest=%u\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    fflush(stdout);
+}
+
+/* uxTaskGetStackHighWaterMark is bytes on this port (StackType_t is uint8_t).
+ * size 0: an IDF task whose configured depth is not in this table. */
+static void dump_stacks(void)
+{
+    static const struct {
+        const char *name;
+        unsigned bytes;
+    } tasks[] = {
+        { "lvgl", 8192 },
+        { "swdraw", 4096 },
+        { "muse_input", 4096 },
+        { "muse_serial", 3584 },
+        { "muse_keep", 4096 },
+        { "muse_voice", 6144 },
+        { "muse_boot", 3072 },
+        { "nimble_host", 3072 },
+        { "main", 6144 },
+        { "tcpip", 0 },
+        { "wifi", 0 },
+        { "sys_evt", 0 },
+        { "esp_timer", 0 },
+        { "ipc0", 0 },
+        { "scan_rfsh", 4096 },
+        { "muse_scan", 4096 },
+        { "pass_heap", 2560 },
+        { "ble_conn", 4096 },
+        { "pair_confirm", 4096 },
+        { "ble_dc", 2048 },
+        { "devinfo", 4096 },
+        { "scan", 4096 },
+    };
+    for (size_t i = 0; i < sizeof(tasks) / sizeof(tasks[0]); i++) {
+        TaskHandle_t task = xTaskGetHandle(tasks[i].name);
+        if (!task) {
+            printf("@stacks %s absent\n", tasks[i].name);
+            continue;
+        }
+        unsigned free_b = (unsigned)(uxTaskGetStackHighWaterMark(task) * sizeof(StackType_t));
+        if (tasks[i].bytes) {
+            printf("@stacks %s free=%u size=%u\n", tasks[i].name, free_b, tasks[i].bytes);
+        } else {
+            printf("@stacks %s free=%u\n", tasks[i].name, free_b);
+        }
+    }
+    fflush(stdout);
+    dump_heap();
+}
+#endif
+
 /*
  * Console-only commands; false for setup commands. Their buffers are taken
  * per command: without PSRAM, static ones would hold internal RAM for good.
  */
 static bool console_command(char *line, bool whole)
 {
+#if CONFIG_MUSE_BOARD_PASSPORT
+    if (!strcmp(line, "stacks")) {
+        dump_stacks();
+        return true;
+    }
+    if (!strcmp(line, "heap")) {
+        dump_heap();
+        return true;
+    }
+    if (!strcmp(line, "park")) {
+        muse_voice_force_hold(true);
+        printf("@park requested\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "unpark")) {
+        muse_voice_force_hold(false);
+        printf("@unpark requested\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "scan")) {
+        esp_err_t err = muse_wifi_scan();
+        printf("@scan %s\n", esp_err_to_name(err));
+        fflush(stdout);
+        return true;
+    }
+#endif
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);
@@ -643,7 +736,8 @@ static bool console_command(char *line, bool whole)
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
  * (see set_face), and "chat=" sends a typed message to Hatch (see chat_line
- * and tools/muse/chat.py).
+ * and tools/muse/chat.py). Passport also takes "stacks", "heap", "park",
+ * "unpark" and "scan".
  */
 static void serial_task(void *arg)
 {
