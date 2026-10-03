@@ -1,0 +1,121 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# FoloToy AI Passport: ESP32-C3, 8 MB flash (XMC), no PSRAM, USB Serial/JTAG.
+# Load last, after sdkconfig.defaults and sdkconfig.muse.
+# Pins: ai-passport-ref components/bsp/include/bsp_pins.h (MIT).
+# sdkconfig.defaults is written for the C5. Options that do not exist on the
+# C3 (240 MHz, C5 PSRAM, C5 revision) are dropped by Kconfig. This file pins
+# the C3 equivalents that matter.
+CONFIG_IDF_TARGET="esp32c3"
+# C5 defaults ask for 240 MHz. The C3 choice tops out at 160, which is also
+# its Kconfig default once 240 is not a visible option.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_MUSE_BOARD_PASSPORT=y
+CONFIG_MUSE_PASSPORT_HEAP_LOG=y
+
+# 8 MB, not the 16 MB sdkconfig.muse asks for. DIO matches the module.
+# Partition table is the upstream 8 MB Muse table; do not invent one.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_muse_8mb.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+
+# GPIO21 is the backlight, so the console must not be UART0.
+# Link's button_init is skipped while Muse is enabled (main/app.c). GPIO0 is
+# still named here so a non-Muse build would not pick the C5 default (GPIO28,
+# which this chip does not have). The full UI does not drive this GPIO.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_HOMEHUB_BUTTON_GPIO=0
+
+# No PSRAM: no Hatch session, no OTA slot pressure, no home-network tunnel.
+# The no-PSRAM block is the one devices/AGENTS.md points at (ideaspark) and
+# that sdkconfig.muse-m5stack-cardputer-adv and sdkconfig.muse-waveshare-c6-18
+# both carry. CONFIG_SPIRAM itself is not a C3 Kconfig symbol; =n keeps the
+# block identical and the overlay check treats a missing symbol as off.
+CONFIG_HOMEHUB_OTA_ENABLED=n
+CONFIG_MUSE_HATCH=n
+CONFIG_SPIRAM=n
+CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=n
+# Servers may still send 16 KB records, so only shrink outbound.
+# From the Cardputer ADV and C6 overlays.
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# With BLE up during pairing the largest free block is too small for a fixed
+# 16 KB input buffer. Dynamic buffers are sized to each record and freed
+# after the handshake. From the Cardputer ADV overlay.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+# The tunnel and discovery need ~60 KB more internal RAM than the control
+# session. From the Cardputer ADV and C6 overlays.
+CONFIG_HOMEHUB_TUNNEL=n
+
+# One draw unit: the C6 overlay, also set on the Cardputer. The menu uses
+# the 12 px font when it is built (muse_menu.c, muse_ui.c); the Cardputer
+# overlay turns that font on.
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
+CONFIG_LV_FONT_MONTSERRAT_12=y
+
+# Bound concurrent chat RX/TX bursts so TCP/Wi-Fi leave room for TLS records.
+# From sdkconfig.muse-m5stack-cardputer-adv. The C6 overlay uses a larger TX
+# pool (16); the C3 has less SRAM than the C6, so the tighter Cardputer
+# numbers are the ones copied here. Not the classic-ESP32 BTDM block from
+# sdkconfig.ideaspark.
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
+CONFIG_LWIP_TCP_WND_DEFAULT=5760
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=32
+
+# One phone at a time. Half the NimBLE pools, from the C6 and Cardputer
+# overlays, gives the pairing TLS handshake back about 9 KB.
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=12
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=15
+
+# Light sleep, from sdkconfig.muse-aipi, in its own block so it can be turned
+# off without touching the memory settings above. On for the first build:
+# display_pause / wait_buttons expect PM to be linked. The C3 has no 32 kHz
+# crystal, so the BLE sleep clock is the main crystal, kept powered.
+# To disable: set PM_ENABLE and FREERTOS_USE_TICKLESS_IDLE to n and delete
+# the BT_CTRL / USJ lines (they depend on those two).
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y
+CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
+# C3 USB Serial/JTAG cannot run through light sleep (no
+# SOC_USB_SERIAL_JTAG_SUPPORT_LIGHT_SLEEP). Hold a PM lock while the console
+# is attached, same as the AIPI overlay.
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
+# Leave the CPU powered in light sleep. On the C3 this option costs 1.68 KB,
+# less than the S3's 8.5 KB that made the AIPI overlay turn it off, but the
+# first build keeps that RAM. AIPI sets the same line.
+CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP=n
+# The workaround isolates every GPIO in light sleep, including the panel bus.
+# AIPI turns it off for the same reason. Default on the C3 is y.
+CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND=n
+# Deep-sleep wake on GPIO0 uses the external 10 kΩ pull-up. The sleep code
+# would otherwise enable the internal pull-up as well (default y).
+CONFIG_ESP_SLEEP_GPIO_ENABLE_INTERNAL_RESISTORS=n
+# Battery meter: time actually slept, and how long each power lock held the
+# chip awake. From the AIPI overlay.
+CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
+CONFIG_PM_PROFILING=y
