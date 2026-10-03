@@ -350,10 +350,12 @@ The default avatar is in `avatar/`: its renderer (`muse_pixel.c`) and
 its animation (`jollybot.gif`, and `happy_anim.c/.h` made from it by
 `tools/gen_happy_anim.py`).
 
-Third-party code keeps its upstream license and header: `minimp3.h` (CC0) and
-`main/pixel_font.c` (BSD-2-Clause, Adafruit). Don't restyle them or replace
-their headers with the Apache one; `components/minimp3/README.md` says how to
-update minimp3.
+Third-party code keeps its upstream license and header: `minimp3.h` (CC0),
+`main/pixel_font.c` (BSD-2-Clause, Adafruit), and the Passport caption font
+in `components/muse/fonts/` (SIL OFL 1.1, bitmaps derived from Noto Sans SC).
+Don't restyle them or replace their headers with the Apache one.
+`components/minimp3/README.md` says how to update minimp3.
+`components/muse/fonts/README.md` says how to regenerate the caption font.
 
 The Apache License doesn't cover the Jollybot avatar in `avatar/`. Its files
 carry only a Meta copyright line; don't add the Apache header to them.

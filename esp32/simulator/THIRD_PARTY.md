@@ -27,3 +27,8 @@ CMake prefers a compatible system SDL2 package. It fetches the pinned LVGL
 archive by default so the simulator always uses its required fonts, drivers,
 and private APIs, and fetches SDL when no compatible package is installed.
 Their source is not vendored in this repository.
+
+`-DMUSE_SIM_CJK_FONT=ON` compiles the Passport caption font that already
+lives in `components/muse/fonts/` (SIL Open Font License 1.1, derived from
+Noto Sans SC). The simulator does not download that font, and the option is
+off unless the build asks for it.

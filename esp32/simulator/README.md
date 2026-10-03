@@ -73,6 +73,12 @@ The Passport profile labels **OK** as talk/confirm and **DOWN** as menu; the
 physical **UP** button moves through menu items. Keyboard shortcuts still select
 preview states rather than emulate device button edges.
 
+To preview the Chinese caption font, add `-DMUSE_SIM_CJK_FONT=ON` and use a
+separate build directory. That switch is off by default, including for
+`MUSE_SIM_BOARD=passport`, so the usual Watcher and Passport binaries keep
+the unscii captions. In that build a scenario caption may contain `\n` for a
+line break.
+
 CMake uses a compatible system SDL2 when available and otherwise downloads
 the pinned SDL 2.32.10 archive. By default it always downloads pinned LVGL
 9.5.0 because the production UI needs version-specific private APIs and the
