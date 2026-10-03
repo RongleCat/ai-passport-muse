@@ -96,10 +96,68 @@ void muse_hatch_tail_words(const char *src, char *out, size_t cap)
     strlcpy(out, p, cap);
 }
 
+#if CONFIG_MUSE_CJK_FONT
+/* Host tests flip this off to replay the old one-column rule. Firmware leaves
+ * it on, so the preprocessor drops the test symbol. */
+#if defined(MUSE_CJK_COLS_TOGGLE)
+static int s_cjk_wide = 1;
+
+void muse_cjk_cols_test_set(int on)
+{
+    s_cjk_wide = on ? 1 : 0;
+}
+
+#define CJK_WIDE_ON s_cjk_wide
+#else
+#define CJK_WIDE_ON 1
+#endif
+
+/* Code point muse_text_ascii just measured, or -1 if those bytes are not one. */
+static int32_t cjk_cp(const char *s, size_t bytes)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    if (bytes < 2 || bytes > 4) {
+        return p[0];
+    }
+    int32_t cp = p[0] & (0x7F >> bytes);
+    for (size_t i = 1; i < bytes; i++) {
+        if ((p[i] & 0xC0) != 0x80) {
+            return -1;
+        }
+        cp = (cp << 6) | (p[i] & 0x3F);
+    }
+    return cp;
+}
+
+/* East Asian Wide / Fullwidth (Unicode TR11). Ambiguous letters stay one column,
+ * which is what the old "kept character counts as 1" rule did. */
+static bool cjk_wide(const char *s, size_t bytes)
+{
+    int32_t cp = cjk_cp(s, bytes);
+    if (cp < 0x1100) {
+        return false;
+    }
+    return (cp <= 0x115F)
+        || cp == 0x2329 || cp == 0x232A
+        || (cp >= 0x2E80 && cp <= 0xA4CF && cp != 0x303F)
+        || (cp >= 0xA960 && cp <= 0xA97C)
+        || (cp >= 0xAC00 && cp <= 0xD7A3)
+        || (cp >= 0xF900 && cp <= 0xFAFF)
+        || (cp >= 0xFE10 && cp <= 0xFE19)
+        || (cp >= 0xFE30 && cp <= 0xFE6F)
+        || (cp >= 0xFF00 && cp <= 0xFF60)
+        || (cp >= 0xFFE0 && cp <= 0xFFE6)
+        || (cp >= 0x1F200 && cp <= 0x1F251)
+        || (cp >= 0x20000 && cp <= 0x3FFFD);
+}
+#endif
+
 /*
- * The next line of `text` wrapped to `cols` characters as the caption shows
+ * The next line of `text` wrapped to `cols` columns as the caption shows
  * them (an ellipsis as three dots, muse_text.h), splitting only words longer
- * than a line.
+ * than a line. With CONFIG_MUSE_CJK_FONT, a wide or fullwidth character counts
+ * as two columns; every other character keeps its old width, and a UTF-8
+ * character is never split across the break.
  */
 static bool next_line(const char **text, int cols, const char **start, size_t *len)
 {
@@ -113,6 +171,11 @@ static bool next_line(const char **text, int cols, const char **start, size_t *l
         size_t bytes;
         char shown[4];
         int w = muse_text_ascii(end, &bytes, shown);
+#if CONFIG_MUSE_CJK_FONT
+        if (CJK_WIDE_ON && w < 0 && cjk_wide(end, bytes)) {
+            w = 2;
+        } else
+#endif
         w = w < 0 ? 1 : w;
         if (n + w > cols && n) {
             break;

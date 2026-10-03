@@ -24,6 +24,9 @@ CONFIG_IDF_TARGET="esp32c3"
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
 CONFIG_MUSE_BOARD_PASSPORT=y
 CONFIG_MUSE_PASSPORT_HEAP_LOG=y
+# Reply and caption text. The font is const in flash. Default in Kconfig is
+# off; only this overlay turns it on, and only Passport can select it.
+CONFIG_MUSE_CJK_FONT=y
 
 # 8 MB, not the 16 MB sdkconfig.muse asks for. DIO matches the module.
 # Partition table is the upstream 8 MB Muse table; do not invent one.

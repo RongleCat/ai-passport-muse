@@ -167,6 +167,17 @@ else()
     message(FATAL_ERROR "MUSE_SIM_BOARD must be watcher or passport, got: ${MUSE_SIM_BOARD}")
 endif()
 
+# Off by default, so the Watcher and Passport simulator binaries stay on the
+# unscii captions. The Passport CJK preview opts in and compiles the same
+# flash font the firmware uses. This is not a Kconfig symbol.
+option(MUSE_SIM_CJK_FONT "Compile the Passport CJK caption font into the simulator" OFF)
+if(MUSE_SIM_CJK_FONT)
+    target_sources(muse_simulator PRIVATE "${MUSE_COMPONENT_DIR}/fonts/muse_font_cjk_14.c")
+    target_compile_definitions(muse_simulator PRIVATE CONFIG_MUSE_CJK_FONT=1)
+    set_source_files_properties("${MUSE_COMPONENT_DIR}/fonts/muse_font_cjk_14.c"
+        PROPERTIES COMPILE_DEFINITIONS "LV_LVGL_H_INCLUDE_SIMPLE")
+endif()
+
 target_include_directories(muse_simulator PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/compat"
     "${CMAKE_CURRENT_SOURCE_DIR}/include"

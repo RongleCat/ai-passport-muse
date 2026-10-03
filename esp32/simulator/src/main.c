@@ -323,6 +323,24 @@ static bool set_link(const char *value)
     return false;
 }
 
+#if CONFIG_MUSE_CJK_FONT
+/* Scenario files are one setting per line. "\\n" is a newline, so a paged
+ * caption can be shown. The default simulator builds leave this out. */
+static void caption_newlines(const char *in, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 1 < cap; i++) {
+        if (in[i] == '\\' && in[i + 1] == 'n') {
+            out[o++] = '\n';
+            i++;
+        } else {
+            out[o++] = in[i];
+        }
+    }
+    out[o] = '\0';
+}
+#endif
+
 static bool apply_setting(const char *key, const char *value, bool real_time)
 {
     bool flag;
@@ -332,7 +350,13 @@ static bool apply_setting(const char *key, const char *value, bool real_time)
         return set_face(value);
     }
     if (!strcmp(key, "caption")) {
+#if CONFIG_MUSE_CJK_FONT
+        char shown[512];
+        caption_newlines(value, shown, sizeof(shown));
+        muse_state_set_caption("%s", shown);
+#else
         muse_state_set_caption("%s", value);
+#endif
         return true;
     }
     if (!strcmp(key, "level") && parse_float(value, 0.0f, 1.0f, &scalar)) {

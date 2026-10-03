@@ -158,4 +158,15 @@ menu "Muse"
             not run at boot and does not touch pairing keys. Leave it off in
             firmware someone will pair.
 
+    config MUSE_CJK_FONT
+        bool "Chinese subset font for Passport reply text"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            Reply and caption labels use a flash-resident Noto Sans SC
+            subset (GB2312 level 1, its punctuation and fullwidth rows, and
+            printable ASCII). The glyphs are const data in flash, not a RAM
+            cache. Other boards cannot select this, so their firmware stays
+            without the font. The Passport overlay turns it on.
+
 endmenu
