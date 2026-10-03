@@ -31,6 +31,7 @@
 #include "lvgl.h"
 #include "src/drivers/sdl/lv_sdl_window.h"
 
+#include "muse_menu.h"
 #include "muse_state.h"
 #include "muse_ui.h"
 #include "sim_board.h"
@@ -68,6 +69,7 @@ static void usage(FILE *out, const char *argv0)
             "  ble=off|advertising|connected         passkey=0..999999\n"
             "  paired=true|false  link=boot|unpaired|pairing|confirm|connecting|online|offline|error\n"
             "  speaker=true|false brightness=10..100 advance=MILLISECONDS\n"
+            "  menu=down|up|select|back|left|right\n"
             "\n"
             "Interactive keys: F1..F7 select face states, H is happy, Space is\n"
             "push-to-talk, +/- change level, [/] change progress, S sleeps,\n"
@@ -414,6 +416,26 @@ static bool apply_setting(const char *key, const char *value, bool real_time)
     if (!strcmp(key, "speaker") && parse_bool(value, &flag)) {
         sim_services_set_speaker(flag);
         return true;
+    }
+    if (!strcmp(key, "menu")) {
+        static const struct {
+            const char *name;
+            muse_menu_key_t key;
+        } keys[] = {
+            { "down", MUSE_MENU_DOWN },
+            { "up", MUSE_MENU_UP },
+            { "select", MUSE_MENU_SELECT },
+            { "back", MUSE_MENU_BACK },
+            { "left", MUSE_MENU_LEFT },
+            { "right", MUSE_MENU_RIGHT },
+        };
+        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            if (!strcmp(value, keys[i].name)) {
+                muse_menu_key(keys[i].key);
+                return true;
+            }
+        }
+        return false;
     }
     if (!strcmp(key, "brightness") && parse_long(value, 10, 100, &number)) {
         sim_services_set_brightness((int)number);
