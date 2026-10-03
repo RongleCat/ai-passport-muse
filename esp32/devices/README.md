@@ -44,22 +44,23 @@ session to Muse. The rest depends on the hardware.
 | **M5Stack StickS3** | ESP32-S3 | 1.14" 135×240 LCD | 8 MB / 8 MB | [M5Stack docs](https://docs.m5stack.com/en/core/StickS3), [M5Unified](https://github.com/m5stack/M5Unified) | [M5Stack](https://shop.m5stack.com/products/m5sticks3-esp32s3-mini-iot-dev-kit) |
 | **M5Stack StopWatch** | ESP32-S3 | 1.75" 466×466 round AMOLED, touch | 16 MB / 8 MB | [M5Stack docs](https://docs.m5stack.com/en/core/StopWatch), [M5Unified](https://github.com/m5stack/M5Unified), [factory firmware](https://github.com/m5stack/M5StopWatch-UserDemo) | — |
 | **M5Stack StickC Plus2** | ESP32 | 1.14" 135×240 LCD | 8 MB / 2 MB | [M5Stack docs](https://docs.m5stack.com/en/core/M5StickC%20PLUS2), [M5Unified](https://github.com/m5stack/M5Unified) | [M5Stack](https://shop.m5stack.com/products/m5stickc-plus2-esp32-mini-iot-development-kit) (end of life) |
+| **FoloToy AI Passport** | ESP32-C3 | 240×320 LCD | 8 MB / none | — | — |
 
 ## Features
 
-| | DevKitC-1 | ideaspark | SenseCAP Indicator | reTerminal E1001 | HA Voice PE | Waveshare S3 1.75C | Waveshare S3 1.75 | AIPI Lite | Waveshare C6 1.8 | Watcher | StickS3 | StickC Plus2 | Cardputer ADV | BOX-3 | StopWatch |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:| :-: | :-: |:-:|
-| Home-network tunnel | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Shows status on | Light | Screen | Screen | E-paper | Light ring | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar |
-| Images from Muse | — | ✅ | ✅ | Black and white | — | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| UI and settings | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Experimental | ✅ | ✅ |
-| Push-to-talk | — | — | — | — | ✅ | ✅ | ✅ | ✅ | Text replies | ✅ | ✅ | ✅ | Text replies (experimental) | ✅ | ✅ |
-| Speaker and mic | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Buzzer and mic | ES8311 (experimental) | ✅ | ✅ |
-| Air sensors | — | — | D1S, D1Pro | — | — | — | — | — | — | — | — | — | — | — | — |
-| Touch | — | — | — | — | — | ✅ | ✅ | — | ✅ | ✅ | — | — | — | ✅ | ✅ |
-| Battery status | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Voltage only | — | — | ✅ |
-| Over-the-air updates | Off | Off | Off | Off | Off | On | On | On | On | On | On | On | Off | On | On |
-| Buttons | BOOT | BOOT | Top | Green | Centre (talk), dial | PWR (talk), BOOT | BOOT (talk), PWR | Two | BOOT (talk), PWR | Wheel (press to talk, turn to sleep) | Front (talk), side (menu), PWR | Front (talk), side (menu), PWR | GO/Space (talk), Esc/Enter/arrows (menu) | BOOT/CONFIG (talk) | Yellow (talk), blue (sleep), PWR |
+| | DevKitC-1 | ideaspark | SenseCAP Indicator | reTerminal E1001 | HA Voice PE | Waveshare S3 1.75C | Waveshare S3 1.75 | AIPI Lite | Waveshare C6 1.8 | Watcher | StickS3 | StickC Plus2 | Cardputer ADV | BOX-3 | StopWatch | AI Passport |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:| :-: | :-: |:-:|:-:|
+| Home-network tunnel | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
+| Shows status on | Light | Screen | Screen | E-paper | Light ring | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar |
+| Images from Muse | — | ✅ | ✅ | Black and white | — | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
+| UI and settings | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Experimental | ✅ | ✅ | ✅ |
+| Push-to-talk | — | — | — | — | ✅ | ✅ | ✅ | ✅ | Text replies | ✅ | ✅ | ✅ | Text replies (experimental) | ✅ | ✅ | Text replies |
+| Speaker and mic | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Buzzer and mic | ES8311 (experimental) | ✅ | ✅ | ES8311 |
+| Air sensors | — | — | D1S, D1Pro | — | — | — | — | — | — | — | — | — | — | — | — | — |
+| Touch | — | — | — | — | — | ✅ | ✅ | — | ✅ | ✅ | — | — | — | ✅ | ✅ | — |
+| Battery status | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Voltage only | — | — | ✅ | Voltage and SOC |
+| Over-the-air updates | Off | Off | Off | Off | Off | On | On | On | On | On | On | On | Off | On | On | Off |
+| Buttons | BOOT | BOOT | Top | Green | Centre (talk), dial | PWR (talk), BOOT | BOOT (talk), PWR | Two | BOOT (talk), PWR | Wheel (press to talk, turn to sleep) | Front (talk), side (menu), PWR | Front (talk), side (menu), PWR | GO/Space (talk), Esc/Enter/arrows (menu) | BOOT/CONFIG (talk) | Yellow (talk), blue (sleep), PWR | OK (talk/confirm), DOWN (menu), UP (up) |
 
 Boards without PSRAM (the ideaspark, Waveshare C6 and Cardputer ADV) don't have room for
 the home-network tunnel. Muse can still reach and control them once the
@@ -243,6 +244,7 @@ board's overlays, in order:
 | M5Stack StickS3 | `esp32s3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-m5stack-sticks3`](sdkconfig.muse-m5stack-sticks3) | by hand |
 | M5Stack StopWatch | `esp32s3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-m5stack-stopwatch`](sdkconfig.muse-m5stack-stopwatch) | by hand |
 | M5Stack StickC Plus2 | `esp32` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-m5stack-stickc-plus2`](sdkconfig.muse-m5stack-stickc-plus2) | by hand |
+| FoloToy AI Passport | `esp32c3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-passport`](sdkconfig.muse-passport) | `tools/muse/board.sh build passport` |
 
 `tools/board.sh BOARD [build|flash|monitor|flash-monitor] [PORT]` builds each
 board in its own `build-<board>` directory. For the boards with the full UI, run `idf.py`

@@ -60,6 +60,7 @@ before adding a feature to one.
 | M5Stack StickS3 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-sticks3` | manual |
 | M5Stack StopWatch | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stopwatch` | manual |
 | M5Stack StickC Plus2 | `esp32` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stickc-plus2` | manual |
+| FoloToy AI Passport | `esp32c3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-passport` | `tools/muse/board.sh build passport` |
 
 The default profile expects the C5 DevKitC-1: an addressable status LED on
 GPIO27, the BOOT button on GPIO28 (active low), 8 MB flash and quad PSRAM.

@@ -147,7 +147,11 @@ connected.
 | Purple | Not paired |
 | Red, blinking | Something went wrong: check the log |
 
-To reset the device and set it up again, hold the button for 5 seconds.
+To reset the device and set it up again, hold the button for 5 seconds. On the
+FoloToy AI Passport, status is shown on the screen: hold **OK** to talk and to
+confirm pairing, use **DOWN** to open and move through the menu, and **UP** to
+move up. Select **Reset pairing** from that menu; it has no five-second reset
+gesture.
 
 Pairing requires a press of the button on the device, and every setup creates
 a fresh encrypted session. Because these are community devices, pairing has no
@@ -178,6 +182,7 @@ status screen.
 | M5Stack StickS3 | UI, push-to-talk, two-button menu, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | M5Stack StopWatch | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | M5Stack StickC Plus2 | UI, push-to-talk, two-button menu, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
+| FoloToy AI Passport | UI, text-reply push-to-talk, three-button menu, battery status | `tools/muse/board.sh build passport` |
 
 See [`devices/`](devices) for each board's hardware, features, and where to
 buy one.
