@@ -17,10 +17,10 @@ limitations under the License.
 # UI simulator
 
 This is a desktop preview of the Muse interface in a 412 x 412 SenseCAP
-Watcher window. It compiles the production `muse_ui.c`, state and text code,
-and the avatar renderer. SDL supplies the display, mouse input, and timing while
-small host adapters stand in for ESP-IDF, FreeRTOS, Wi-Fi, Bluetooth, Link,
-settings, and power services.
+Watcher window by default. It compiles the production `muse_ui.c`, state and
+text code, and the avatar renderer. SDL supplies the display, mouse input, and
+timing while small host adapters stand in for ESP-IDF, FreeRTOS, Wi-Fi,
+Bluetooth, Link, settings, and power services.
 
 The simulator is intended for fast UI work and repeatable screenshots. It does
 not emulate the ESP32-S3 CPU, the Watcher's Himax camera, audio hardware,
@@ -59,6 +59,19 @@ cmake -S esp32/simulator -B esp32/simulator/build -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug
 cmake --build esp32/simulator/build --parallel
 ```
+
+To preview the FoloToy AI Passport's rectangular 240 x 320, non-touch display,
+configure a separate build directory:
+
+```sh
+cmake -S esp32/simulator -B esp32/simulator/build-passport -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug -DMUSE_SIM_BOARD=passport
+cmake --build esp32/simulator/build-passport --parallel
+```
+
+The Passport profile labels **OK** as talk/confirm and **DOWN** as menu; the
+physical **UP** button moves through menu items. Keyboard shortcuts still select
+preview states rather than emulate device button edges.
 
 CMake uses a compatible system SDL2 when available and otherwise downloads
 the pinned SDL 2.32.10 archive. By default it always downloads pinned LVGL
