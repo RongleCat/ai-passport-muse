@@ -101,9 +101,10 @@ static char s_noise_host[256] = NOISE_DEFAULT_HOST;
 // without PSRAM. Reserve enough inbound space for those frames.
 #define SVC_FRAME_SCRATCH (SMALL_CONTROL_SESSION ? 17 * 1024 : 12288)
 
-// The ADV cannot allocate the session with the larger inbound buffers and the
-// usual outbound buffers together. Keep this reduction local to that board.
-#if SMALL_CONTROL_SESSION && CONFIG_MUSE_BOARD_M5STACK_CARDPUTER_ADV
+// The ADV and the Passport cannot allocate the session with the larger inbound
+// buffers and the usual outbound buffers together. Same outbound cut on both;
+// the name stays, the Passport gate is the second half of the condition.
+#if SMALL_CONTROL_SESSION && (CONFIG_MUSE_BOARD_M5STACK_CARDPUTER_ADV || CONFIG_MUSE_BOARD_PASSPORT)
 #define CARDPUTER_CONTROL_SESSION 1
 #else
 #define CARDPUTER_CONTROL_SESSION 0

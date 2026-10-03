@@ -60,7 +60,8 @@ static const char *TAG = "board";
 #define LCD_W 240
 #define LCD_H 320
 #define LCD_RADIUS 30
-#define DRAW_LINES 20
+/* 240*10*2 bytes. 20 lines did not fit beside BLE; 10 is the first cut. */
+#define DRAW_LINES 10
 #define LCD_HOST SPI2_HOST
 #define LCD_PCLK_HZ (40 * 1000 * 1000)
 #define ADC_SAMPLES 4
@@ -436,8 +437,10 @@ static lv_display_t *display_start(lv_indev_t **touch)
     heap_stage("after panel");
     esp_lv_adapter_config_t adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
     adapter_cfg.task_core_id = MUSE_UI_CORE;
-    /* One core: keep drawing below Wi-Fi and app_main, as on the C6 board. */
+    /* One core: keep drawing below Wi-Fi and app_main, as on the C6 board.
+     * Default stack is 8 KB; the Passport boot only needs the flush path. */
     adapter_cfg.task_priority = 1;
+    adapter_cfg.task_stack_size = 4096;
     if (esp_lv_adapter_init(&adapter_cfg) != ESP_OK) {
         return NULL;
     }
@@ -511,6 +514,10 @@ static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t 
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
+    /* Default is 6 descriptors * 240 frames, stereo 16-bit, both directions.
+     * 4 * 160 frames is 20 ms per buffer at 16 kHz, matching a voice chunk. */
+    chan_cfg.dma_desc_num = 4;
+    chan_cfg.dma_frame_num = 160;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx, &s_rx), TAG, "i2s channel");
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(MUSE_AUDIO_RATE),

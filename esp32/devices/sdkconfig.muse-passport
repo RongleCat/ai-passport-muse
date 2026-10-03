@@ -67,27 +67,77 @@ CONFIG_HOMEHUB_TUNNEL=n
 # overlay turns that font on.
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
 CONFIG_LV_FONT_MONTSERRAT_12=y
+# lvgl/Kconfig: simple-layer buffer default 24576, no upper bound. Widgets
+# with partial opacity are drawn in chunks of this size. Draw-thread stack
+# default 8192 (LV_OS_FREERTOS).
+CONFIG_LV_DRAW_LAYER_SIMPLE_BUF_SIZE=4096
+CONFIG_LV_DRAW_THREAD_STACK_SIZE=4096
 
 # Bound concurrent chat RX/TX bursts so TCP/Wi-Fi leave room for TLS records.
 # From sdkconfig.muse-m5stack-cardputer-adv. The C6 overlay uses a larger TX
 # pool (16); the C3 has less SRAM than the C6, so the tighter Cardputer
 # numbers are the ones copied here. Not the classic-ESP32 BTDM block from
 # sdkconfig.ideaspark.
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_RX_BA_WIN=6
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+# esp_wifi/Kconfig: each static RX buffer is about 1.6 KB (this chip logs
+# 1600). Minimum count is 2, and it should be >= RX_BA_WIN when AMPDU RX is
+# on. RX_BA_WIN range is 2-32. sdkconfig.muse leaves TX_BA_WIN at 16; the
+# Kconfig default is 6. Dynamic counts must be at least the static RX count.
+# MGMT short buffers range 6-32 (default 32). RX MGMT buffer count range 1-10
+# (default 5, about 500 bytes each while static).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=3
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_RX_BA_WIN=3
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_TX_BA_WIN=6
+CONFIG_ESP_WIFI_MGMT_SBUF_NUM=6
+CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF=2
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
 CONFIG_LWIP_TCP_WND_DEFAULT=5760
-CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
-CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
-CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=16
+# Pools, not per-connection windows. Defaults: sockets 10, TCP 16, UDP 16.
+CONFIG_LWIP_MAX_SOCKETS=6
+CONFIG_LWIP_MAX_ACTIVE_TCP=6
+CONFIG_LWIP_MAX_LISTENING_TCP=4
+CONFIG_LWIP_MAX_UDP_PCBS=6
+# Measured main-task high water on this board was ~1 KB used of 8192 during
+# boot and the Wi-Fi join. 6144 keeps room for a later TLS call on app_main.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 
 # One phone at a time. Half the NimBLE pools, from the C6 and Cardputer
 # overlays, gives the pairing TLS handshake back about 9 KB.
-CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
-CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=12
-CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12
-CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=15
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=8
+# One phone. IDF 6.0.1 ranges: MAX_CONNECTIONS already 1; MAX_BONDS has no
+# listed range (default 3); GATT_MAX_PROCS default 4; ATT prepare entries
+# default 64. Host stack default on C3 is 4096; early high-water was ~200 B
+# used, 3072 leaves room for a pairing write.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# 2, not 1: IDF 6.0.1's ble_store_nvs.c sorts bonds[i+1] and -Werror=array-bounds
+# rejects a 1-element array. One phone still fits.
+CONFIG_BT_NIMBLE_MAX_BONDS=2
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=2
+CONFIG_BT_NIMBLE_ATT_MAX_PREP_ENTRIES=8
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=3072
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+# Controller, from components/bt/controller/esp32c3/Kconfig.in.
+# BLE_MAX_ACT default 6, range 1-10, 828 bytes each. Peripheral needs one
+# advertiser and one connection.
+CONFIG_BT_CTRL_BLE_MAX_ACT=2
+# Scan, duplicate filter and adv-report flow control are central/observer
+# features (FLOW_CTRL depends on BT_CTRL_BLE_SCAN). Passport only advertises.
+CONFIG_BT_CTRL_BLE_SCAN=n
+CONFIG_BT_CTRL_BLE_SCAN_DUPL=n
+CONFIG_BT_CTRL_ADV_DUP_FILT_MAX=1
+CONFIG_BT_CTRL_DTM_ENABLE=n
+# Moves the controller out of IRAM. The Kconfig text says this frees >20 KB.
+# Auto-suspend is the recommended companion so a flash write does not stall
+# the controller. XMC support is unverified until the board boots with it.
+CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
+CONFIG_SPI_FLASH_AUTO_SUSPEND=y
 
 # Light sleep, from sdkconfig.muse-aipi, in its own block so it can be turned
 # off without touching the memory settings above. On for the first build:

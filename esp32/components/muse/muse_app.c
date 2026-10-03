@@ -90,6 +90,7 @@ void muse_app_run(const muse_board_t *board)
 
     QueueHandle_t q = xQueueCreate(16, sizeof(muse_input_event_t));
     ESP_ERROR_CHECK(muse_input_start(q));
+    heap_stage("after input");
 
     /* Let the boot animation (flame ignites, eyes open) play out. */
     vTaskDelay(pdMS_TO_TICKS(1400));
