@@ -37,7 +37,11 @@
 
 #include "ble_server.h"
 #include "muse_audio.h"
+#include "muse_voice.h"
 #include "wifi_mgr.h"
+
+void passport_i2s_stats(const char *tag);
+void passport_i2s_stats_reset(void);
 
 static atomic_bool s_busy;
 
@@ -293,6 +297,8 @@ static void nvs_stress_task(void *arg) {
            (unsigned)stats.available_entries, (unsigned)stats.used_entries,
            (unsigned)stats.total_entries);
     fflush(stdout);
+    passport_i2s_stats_reset();
+    muse_voice_request_selftest();
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open("nvstress", NVS_READWRITE, &handle);
@@ -317,6 +323,9 @@ static void nvs_stress_task(void *arg) {
     int fail = 0;
     size_t prev_avail = stats.available_entries;
     for (int i = 0; i < 200; i++) {
+        if (i % 8 == 0) {
+            muse_voice_request_chirp();
+        }
         size_t n = sizes[i % 5];
         memset(buf, (uint8_t)i, n);
         err = nvs_set_blob(handle, "blob", buf, n);
@@ -374,6 +383,7 @@ static void nvs_stress_task(void *arg) {
            (long long)ms);
     /* The start available count was printed on the start line. */
     fflush(stdout);
+    passport_i2s_stats("nvstest");
     atomic_store(&s_busy, false);
     vTaskDelete(NULL);
 }
