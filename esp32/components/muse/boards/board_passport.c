@@ -288,6 +288,32 @@ static esp_err_t keys_init(void)
     return ESP_OK;
 }
 
+static void heap_stage(const char *label)
+{
+#if CONFIG_MUSE_PASSPORT_HEAP_LOG
+    ESP_LOGI(TAG, "HEAP %-22s free=%u min=%u largest=%u", label,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+#else
+    (void)label;
+#endif
+}
+
+static const char *key_name(passport_key_t key)
+{
+    switch (key) {
+    case PASSPORT_KEY_UP:
+        return "UP";
+    case PASSPORT_KEY_DOWN:
+        return "DOWN";
+    case PASSPORT_KEY_OK:
+        return "OK";
+    default:
+        return "NONE";
+    }
+}
+
 #if CONFIG_MUSE_PASSPORT_HEAP_LOG
 static void heap_log_task(void *arg)
 {
@@ -407,6 +433,7 @@ static lv_display_t *display_start(lv_indev_t **touch)
         return NULL;
     }
 
+    heap_stage("after panel");
     esp_lv_adapter_config_t adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
     adapter_cfg.task_core_id = MUSE_UI_CORE;
     /* One core: keep drawing below Wi-Fi and app_main, as on the C6 board. */
@@ -440,6 +467,7 @@ static lv_display_t *display_start(lv_indev_t **touch)
     if (esp_lv_adapter_start() != ESP_OK) {
         return NULL;
     }
+    heap_stage("after display");
     return disp;
 }
 
@@ -537,7 +565,13 @@ static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t 
 
 static unsigned poll_buttons(void)
 {
-    passport_key_edges_t edges = passport_key_debounce_step(&s_keys, passport_key_from_mv(read_key_mv()));
+    int mv = read_key_mv();
+    passport_key_t before = s_keys.stable;
+    passport_key_edges_t edges = passport_key_debounce_step(&s_keys, passport_key_from_mv(mv));
+    /* Debounce already limits this to a real stable change. */
+    if (s_keys.stable != before) {
+        ESP_LOGI(TAG, "key mv=%d name=%s", mv, key_name(s_keys.stable));
+    }
     unsigned ev = 0;
     if (edges.released == PASSPORT_KEY_OK) {
         ev |= MUSE_BTN_TALK_RELEASE;

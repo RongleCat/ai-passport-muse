@@ -133,4 +133,16 @@ menu "Muse"
             boards, including the M5 ones, leave it off. Turn it off once
             the memory budget is known.
 
+    # Debug only. Default off, so a normal Passport build still starts BLE
+    # while unpaired. Turn on to measure the UI and audio heap without the
+    # controller; the device cannot be discovered until it is off again.
+    config MUSE_PASSPORT_SKIP_BLE
+        bool "Passport: do not start BLE (heap measurement)"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            Skip ble_server_start on this board. Pairing needs the radio, so
+            leave this off for a device someone will pair. Other boards do
+            not see this option.
+
 endmenu
