@@ -55,6 +55,9 @@ esp_err_t passport_cw2017_init(i2c_master_bus_handle_t bus);
 /* Reads voltage (mV) and SOC percent. *soc_percent is -1 when not ready. */
 esp_err_t passport_cw2017_read(int *millivolts, int *soc_percent);
 
+/* Register bytes before conversion: VCELL 0x02-0x03, SOC 0x04-0x05. */
+esp_err_t passport_cw2017_read_raw(uint8_t cell[2], uint8_t soc[2]);
+
 /*
  * Terminal sleep: write CONFIG=0xF0 and read it back, one retry.
  * ESP_OK when the gauge was never initialized (nothing to do).

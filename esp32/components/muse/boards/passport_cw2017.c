@@ -205,12 +205,18 @@ fail:
     return err;
 }
 
+esp_err_t passport_cw2017_read_raw(uint8_t cell[2], uint8_t soc[2])
+{
+    ESP_RETURN_ON_ERROR(cw_read(CW_REG_VCELL_H, cell, 2), TAG, "vcell");
+    ESP_RETURN_ON_ERROR(cw_read(CW_REG_SOC_H, soc, 2), TAG, "soc");
+    return ESP_OK;
+}
+
 esp_err_t passport_cw2017_read(int *millivolts, int *soc_percent)
 {
     uint8_t cell[2] = { 0 };
     uint8_t soc[2] = { 0 };
-    ESP_RETURN_ON_ERROR(cw_read(CW_REG_VCELL_H, cell, 2), TAG, "vcell");
-    ESP_RETURN_ON_ERROR(cw_read(CW_REG_SOC_H, soc, 2), TAG, "soc");
+    ESP_RETURN_ON_ERROR(passport_cw2017_read_raw(cell, soc), TAG, "raw");
     uint16_t raw = (uint16_t)((cell[0] << 8) | cell[1]);
     *millivolts = passport_cw2017_raw_to_mv(raw);
     *soc_percent = passport_cw2017_soc_percent(soc[0]);

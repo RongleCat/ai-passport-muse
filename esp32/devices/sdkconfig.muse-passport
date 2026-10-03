@@ -141,6 +141,12 @@ CONFIG_BT_CTRL_DTM_ENABLE=n
 # the controller. XMC support is unverified until the board boots with it.
 CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 CONFIG_SPI_FLASH_AUTO_SUSPEND=y
+# I2S DMA EOF callbacks in IRAM (linker.lf noflash). Measured against the
+# same image with the flag off: DRAM .text 72362 -> 72674 (+312), .bss and
+# .data unchanged. The callbacks are 124 and 176 bytes at 0x4038xxxx.
+# Idle capture did not drop frames with the flag off; this is the
+# cache-disabled path, next to auto-suspend, not a bigger DMA queue.
+CONFIG_I2S_ISR_IRAM_SAFE=y
 
 # Light sleep, from sdkconfig.muse-aipi, in its own block so it can be turned
 # off without touching the memory settings above. On for the first build:

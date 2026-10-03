@@ -99,7 +99,8 @@ static void power_off(void)
     vTaskDelay(pdMS_TO_TICKS(500));
     ESP_LOGE(TAG, "power-off failed (%s)", esp_err_to_name(err));
     muse_state_set_mode(MUSE_MODE_IDLE);
-    muse_state_set_caption("COULDN'T POWER OFF");
+    muse_state_set_caption(err == ESP_ERR_TIMEOUT ? "RELEASE TO POWER OFF"
+                                                   : "COULDN'T POWER OFF");
 }
 
 static void set_asleep(bool asleep, const char *why)
@@ -573,6 +574,10 @@ static void set_face(const char *name)
 #if CONFIG_MUSE_BOARD_PASSPORT
 void passport_bench_fit(void);
 void passport_bench_nvs_stress(void);
+void passport_key_levels(void);
+void passport_gauge_log(void);
+void passport_i2s_stats(const char *tag);
+void passport_i2s_stats_reset(void);
 
 static void dump_heap(void)
 {
@@ -675,6 +680,50 @@ static bool console_command(char *line, bool whole)
         passport_bench_nvs_stress();
         return true;
     }
+    if (!strcmp(line, "keylevel")) {
+        passport_key_levels();
+        return true;
+    }
+    if (!strcmp(line, "gauge")) {
+        passport_gauge_log();
+        return true;
+    }
+    if (!strcmp(line, "i2sstat")) {
+        passport_i2s_stats("now");
+        return true;
+    }
+    if (!strcmp(line, "i2sreset")) {
+        passport_i2s_stats_reset();
+        printf("@i2s reset\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "chirp")) {
+        muse_voice_request_chirp();
+        printf("@chirp requested\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "selftest")) {
+        muse_voice_request_selftest();
+        printf("@selftest requested\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "usb")) {
+        muse_power_t p = muse_state_power();
+        printf("@usb jtag=%d power_usb=%d power_charging=%d pct=%d mv=%d\n",
+               muse_console_host() ? 1 : 0, p.usb ? 1 : 0, p.charging ? 1 : 0,
+               p.battery_pct, p.battery_mv);
+        fflush(stdout);
+        return true;
+    }
+    if (!strncmp(line, "caption=", 8)) {
+        muse_state_set_caption("%s", line + 8);
+        printf("@caption set\n");
+        fflush(stdout);
+        return true;
+    }
 #endif
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
@@ -750,8 +799,9 @@ static bool console_command(char *line, bool whole)
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
  * (see set_face), and "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py). Passport also takes "stacks", "heap", "park",
- * "unpark", "scan", "fit" and "nvstest" (the last one is off unless
- * CONFIG_MUSE_PASSPORT_NVS_STRESS is set).
+ * "unpark", "scan", "fit", "nvstest" (off unless
+ * CONFIG_MUSE_PASSPORT_NVS_STRESS is set), "keylevel", "gauge", "usb",
+ * "i2sstat", "i2sreset", "chirp", "selftest", and "caption=".
  */
 static void serial_task(void *arg)
 {

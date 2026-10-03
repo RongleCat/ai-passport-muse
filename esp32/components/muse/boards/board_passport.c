@@ -27,7 +27,10 @@
 #include "passport_cw2017.h"
 #include "passport_keys.h"
 
+#include <stdio.h>
 #include <string.h>
+
+#include "esp_attr.h"
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -66,6 +69,13 @@ static const char *TAG = "board";
 #define LCD_HOST SPI2_HOST
 #define LCD_PCLK_HZ (40 * 1000 * 1000)
 #define ADC_SAMPLES 4
+/* 160 frames at 16 kHz is 10 ms. Six descriptors of 240 frames is the BSP's
+ * queue; this board uses the smaller one measured in T6. */
+#define I2S_DMA_DESC 4
+#define I2S_DMA_FRAMES 160
+#define KEY_LOG_GAP_MS 300
+#define POWER_OFF_RELEASE_MS 8000
+#define POWER_OFF_GPIO_MS 2000
 
 #define PIN_LCD_CS GPIO_NUM_1
 #define PIN_LCD_DC GPIO_NUM_20
@@ -130,6 +140,9 @@ static const uint8_t s_es8311_check[][3] = {
 static i2c_master_bus_handle_t s_i2c;
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t s_cali;
+static volatile bool s_key_holdoff;
+static volatile uint32_t s_rx_ovf;
+static volatile uint32_t s_tx_ovf;
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static bool s_bl_ready;
@@ -249,7 +262,7 @@ static void release_sleep_holds(void)
 
 static int read_key_mv(void)
 {
-    if (!s_adc || !s_cali) {
+    if (s_key_holdoff || !s_adc || !s_cali) {
         return -1;
     }
     int sum = 0;
@@ -267,18 +280,32 @@ static int read_key_mv(void)
     return mv;
 }
 
-static esp_err_t keys_init(void)
+static esp_err_t keys_adc_open(void)
 {
     /* External 10 kΩ pull-up. An internal pull (~45 kΩ) collapses the ladder. */
     gpio_pullup_dis(PIN_KEYS);
     gpio_pulldown_dis(PIN_KEYS);
     const adc_oneshot_unit_init_cfg_t unit = { .unit_id = ADC_UNIT_1 };
-    ESP_RETURN_ON_ERROR(adc_oneshot_new_unit(&unit, &s_adc), TAG, "adc");
+    esp_err_t err = adc_oneshot_new_unit(&unit, &s_adc);
+    if (err != ESP_OK) {
+        s_adc = NULL;
+        return err;
+    }
     const adc_oneshot_chan_cfg_t channel = {
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    esp_err_t err = adc_oneshot_config_channel(s_adc, ADC_CHANNEL_0, &channel);
+    err = adc_oneshot_config_channel(s_adc, ADC_CHANNEL_0, &channel);
+    if (err != ESP_OK) {
+        adc_oneshot_del_unit(s_adc);
+        s_adc = NULL;
+    }
+    return err;
+}
+
+static esp_err_t keys_init(void)
+{
+    esp_err_t err = keys_adc_open();
     if (err != ESP_OK) {
         return err;
     }
@@ -519,14 +546,110 @@ static void display_pause(bool pause)
     }
 }
 
+static bool IRAM_ATTR i2s_rx_ovf(i2s_chan_handle_t handle, i2s_event_data_t *event, void *user)
+{
+    (void)handle;
+    (void)event;
+    (void)user;
+    s_rx_ovf++;
+    return false;
+}
+
+static bool IRAM_ATTR i2s_tx_ovf(i2s_chan_handle_t handle, i2s_event_data_t *event, void *user)
+{
+    (void)handle;
+    (void)event;
+    (void)user;
+    s_tx_ovf++;
+    return false;
+}
+
+void passport_i2s_stats_reset(void)
+{
+    s_rx_ovf = 0;
+    s_tx_ovf = 0;
+}
+
+void passport_i2s_stats(const char *tag)
+{
+    printf("@i2s %s rx_ovf=%u tx_ovf=%u dma=%ux%u ms=%u iram_safe=%d\n",
+           tag ? tag : "now", (unsigned)s_rx_ovf, (unsigned)s_tx_ovf,
+           (unsigned)I2S_DMA_DESC, (unsigned)I2S_DMA_FRAMES,
+           (unsigned)(I2S_DMA_FRAMES * 1000 / MUSE_AUDIO_RATE),
+#if CONFIG_I2S_ISR_IRAM_SAFE
+           1
+#else
+           0
+#endif
+    );
+    fflush(stdout);
+}
+
+/* One sample of the ladder, then the same pin as a digital input.
+ * The ADC unit is closed only for the digital read and opened again.
+ * Callers are the serial console, not the input task. */
+void passport_key_levels(void)
+{
+    int mv = read_key_mv();
+    int during = gpio_get_level(PIN_KEYS);
+    s_key_holdoff = true;
+    vTaskDelay(pdMS_TO_TICKS(30));
+    adc_oneshot_unit_handle_t unit = s_adc;
+    s_adc = NULL;
+    if (unit) {
+        adc_oneshot_del_unit(unit);
+    }
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << PIN_KEYS,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t configured = gpio_config(&cfg);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    int d0 = gpio_get_level(PIN_KEYS);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    int d1 = gpio_get_level(PIN_KEYS);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    int d2 = gpio_get_level(PIN_KEYS);
+    esp_err_t restored = keys_adc_open();
+    s_key_holdoff = false;
+    int after = read_key_mv();
+    printf("@keylevel adc_mv=%d name=%s gpio_during_adc=%d digital=%d,%d,%d "
+           "gpio_cfg=%s restore=%s adc_after=%d\n",
+           mv, key_name(mv < 0 ? PASSPORT_KEY_NONE : passport_key_from_mv(mv)),
+           during, d0, d1, d2, esp_err_to_name(configured), esp_err_to_name(restored),
+           after);
+    fflush(stdout);
+}
+
+void passport_gauge_log(void)
+{
+    uint8_t cell[2] = { 0 };
+    uint8_t soc[2] = { 0 };
+    esp_err_t err = passport_cw2017_read_raw(cell, soc);
+    if (err != ESP_OK) {
+        printf("@gauge err=%s\n", esp_err_to_name(err));
+        fflush(stdout);
+        return;
+    }
+    uint16_t raw = (uint16_t)((cell[0] << 8) | cell[1]);
+    int mv = passport_cw2017_raw_to_mv(raw);
+    int pct = passport_cw2017_soc_percent(soc[0]);
+    printf("@gauge cell=%02x%02x raw=%u mv=%d soc=%02x%02x pct=%d\n",
+           cell[0], cell[1], (unsigned)(raw & 0x3fff), mv, soc[0], soc[1], pct);
+    fflush(stdout);
+}
+
 static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t *mic)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
-    /* Default is 6 descriptors * 240 frames, stereo 16-bit, both directions.
-     * 4 * 160 frames is 20 ms per buffer at 16 kHz, matching a voice chunk. */
-    chan_cfg.dma_desc_num = 4;
-    chan_cfg.dma_frame_num = 160;
+    /* BSP uses 6 descriptors * 240 frames (15 ms each, 90 ms queued).
+     * 160 frames at 16 kHz is 10 ms, not 20. A voice chunk is 320 frames. */
+    chan_cfg.dma_desc_num = I2S_DMA_DESC;
+    chan_cfg.dma_frame_num = I2S_DMA_FRAMES;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx, &s_rx), TAG, "i2s channel");
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(MUSE_AUDIO_RATE),
@@ -542,8 +665,29 @@ static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t 
     std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx, &std_cfg), TAG, "i2s tx");
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_rx, &std_cfg), TAG, "i2s rx");
+    i2s_event_callbacks_t cbs = {
+        .on_recv_q_ovf = i2s_rx_ovf,
+        .on_send_q_ovf = i2s_tx_ovf,
+    };
+    esp_err_t cb = i2s_channel_register_event_callback(s_rx, &cbs, NULL);
+    if (cb == ESP_OK) {
+        cbs.on_recv_q_ovf = NULL;
+        cb = i2s_channel_register_event_callback(s_tx, &cbs, NULL);
+    }
+    if (cb != ESP_OK) {
+        ESP_LOGW(TAG, "i2s overflow callback not installed (%s)", esp_err_to_name(cb));
+    }
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "i2s tx on");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx), TAG, "i2s rx on");
+    ESP_LOGI(TAG, "i2s dma %u x %u (%u ms/buf) iram_safe=%d",
+             (unsigned)I2S_DMA_DESC, (unsigned)I2S_DMA_FRAMES,
+             (unsigned)(I2S_DMA_FRAMES * 1000 / MUSE_AUDIO_RATE),
+#if CONFIG_I2S_ISR_IRAM_SAFE
+             1
+#else
+             0
+#endif
+    );
 
     audio_codec_i2s_cfg_t i2s_cfg = { .port = I2S_NUM_0, .rx_handle = s_rx, .tx_handle = s_tx };
     s_data_if = audio_codec_new_i2s_data(&i2s_cfg);
@@ -586,7 +730,21 @@ static unsigned poll_buttons(void)
     passport_key_edges_t edges = passport_key_debounce_step(&s_keys, passport_key_from_mv(mv));
     /* Debounce already limits this to a real stable change. */
     if (s_keys.stable != before) {
-        ESP_LOGI(TAG, "key mv=%d name=%s", mv, key_name(s_keys.stable));
+        static TickType_t last_log;
+        static unsigned suppressed;
+        TickType_t now = xTaskGetTickCount();
+        if (last_log != 0 && (now - last_log) < pdMS_TO_TICKS(KEY_LOG_GAP_MS)) {
+            suppressed++;
+        } else {
+            if (suppressed) {
+                ESP_LOGI(TAG, "key mv=%d name=%s (+%u suppressed)", mv,
+                         key_name(s_keys.stable), suppressed);
+                suppressed = 0;
+            } else {
+                ESP_LOGI(TAG, "key mv=%d name=%s", mv, key_name(s_keys.stable));
+            }
+            last_log = now;
+        }
     }
     unsigned ev = 0;
     if (edges.released == PASSPORT_KEY_OK) {
@@ -758,8 +916,37 @@ static void note(const char *step, esp_err_t err)
     }
 }
 
+/* A key still in a window is the deep-sleep wake level once GPIO0 is a
+ * digital input. Wait here, before the panel and codec are torn down, so a
+ * timeout can return with the UI still running. */
+static esp_err_t wait_key_released(int timeout_ms)
+{
+    int waited = 0;
+    int mv = -1;
+    while (waited <= timeout_ms) {
+        mv = read_key_mv();
+        if (mv < 0) {
+            ESP_LOGW(TAG, "key adc unreadable; not powering off");
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (passport_key_from_mv(mv) == PASSPORT_KEY_NONE) {
+            ESP_LOGI(TAG, "key released mv=%d after %d ms", mv, waited);
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+        waited += 20;
+    }
+    ESP_LOGW(TAG, "key still held mv=%d name=%s after %d ms; not powering off",
+             mv, key_name(passport_key_from_mv(mv)), timeout_ms);
+    return ESP_ERR_TIMEOUT;
+}
+
 static esp_err_t power_off(void)
 {
+    esp_err_t released = wait_key_released(POWER_OFF_RELEASE_MS);
+    if (released != ESP_OK) {
+        return released;
+    }
     /* Peripheral failures are logged and do not abort. Pin release is terminal:
      * if deep sleep returns, restart instead of touching the bus again. */
     display_pause(true);
@@ -811,14 +998,22 @@ static esp_err_t power_off(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&key);
-    /* A key held down already looks like the wake level. Wait it out.
-     * The digital threshold versus the OK/DOWN ladder is not verified. */
-    for (int i = 0; i < 100 && gpio_get_level(PIN_KEYS) == 0; i++) {
+    /* Do not arm a low-level wake while the pad still reads low. The ADC
+     * wait above is the recoverable path; this is the last check after the
+     * pin leaves the ADC and becomes a digital input. */
+    int waited = 0;
+    int level = gpio_get_level(PIN_KEYS);
+    while (level == 0 && waited < POWER_OFF_GPIO_MS) {
         vTaskDelay(pdMS_TO_TICKS(20));
+        waited += 20;
+        level = gpio_get_level(PIN_KEYS);
     }
-    if (gpio_get_level(PIN_KEYS) == 0) {
-        ESP_LOGW(TAG, "GPIO0 still low; deep sleep may wake immediately");
+    if (level == 0) {
+        ESP_LOGW(TAG, "GPIO0 still low after %d ms; not arming wake", waited);
+        esp_restart();
+        return ESP_ERR_INVALID_STATE;
     }
+    ESP_LOGI(TAG, "GPIO0 high after %d ms; arming low wake", waited);
     esp_err_t wake = esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(
         1ULL << PIN_KEYS, ESP_GPIO_WAKEUP_GPIO_LOW);
     if (wake != ESP_OK) {
