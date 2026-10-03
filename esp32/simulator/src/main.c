@@ -57,7 +57,7 @@ static void usage(FILE *out, const char *argv0)
 {
     fprintf(out,
             "Usage: %s [--headless] [--scenario FILE] [--run-ms N] "
-            "[--screenshot FILE.ppm]\n"
+            "[--screenshot FILE.ppm] [--rounded-mask PX]\n"
             "\n"
             "Scenario lines are key=value. Supported keys:\n"
             "  face=boot|idle|listening|thinking|speaking|error|off|happy\n"
@@ -71,7 +71,8 @@ static void usage(FILE *out, const char *argv0)
             "\n"
             "Interactive keys: F1..F7 select face states, H is happy, Space is\n"
             "push-to-talk, +/- change level, [/] change progress, S sleeps,\n"
-            "P writes muse-simulator.ppm, Esc quits. Mouse input is touch.\n",
+            "P writes muse-simulator.ppm, Esc quits. Mouse input is touch.\n"
+            "  --rounded-mask PX applies a host-only screenshot corner mask.\n",
             argv0);
 }
 
@@ -98,7 +99,39 @@ static void render_for(uint32_t duration_ms, bool real_time)
     }
 }
 
-static bool write_snapshot(const char *path)
+static int clamp_rounded_mask(int radius, int width, int height)
+{
+    int max_radius = width < height ? width / 2 : height / 2;
+    if (radius < 0) {
+        return 0;
+    }
+    return radius > max_radius ? max_radius : radius;
+}
+
+static void apply_rounded_mask(uint8_t *pixels, int width, int height, int radius)
+{
+    radius = clamp_rounded_mask(radius, width, height);
+    for (int y = 0; y < height; ++y) {
+        if (radius == 0 || (y >= radius && y < height - radius)) {
+            continue;
+        }
+        int edge_y = y < radius ? radius - y : y - (height - 1 - radius);
+        int inset = 0;
+        while ((inset + 1) * (inset + 1) + edge_y * edge_y <= radius * radius) {
+            ++inset;
+        }
+        int visible_x1 = radius - inset;
+        int visible_x2 = width - radius + inset - 1;
+        for (int x = 0; x < visible_x1; ++x) {
+            memset(pixels + ((size_t)y * width + x) * 3, 0, 3);
+        }
+        for (int x = visible_x2 + 1; x < width; ++x) {
+            memset(pixels + ((size_t)y * width + x) * 3, 0, 3);
+        }
+    }
+}
+
+static bool write_snapshot(const char *path, int rounded_mask_px)
 {
     lv_display_t *display = sim_board_display();
     if (!display) {
@@ -126,6 +159,7 @@ static bool write_snapshot(const char *path)
         free(pixels);
         return false;
     }
+    apply_rounded_mask(pixels, width, height, rounded_mask_px);
     FILE *out = fopen(path, "wb");
     if (!out) {
         fprintf(stderr, "%s: %s\n", path, strerror(errno));
@@ -462,7 +496,7 @@ static int event_watch(void *userdata, SDL_Event *event)
     } else if (down && key == SDLK_s) {
         muse_state_set_asleep(!muse_state_asleep());
     } else if (down && key == SDLK_p) {
-        (void)write_snapshot("muse-simulator.ppm");
+        (void)write_snapshot("muse-simulator.ppm", 0);
     }
     return 1;
 }
@@ -472,6 +506,7 @@ int main(int argc, char **argv)
     const char *scenario = NULL;
     const char *screenshot = NULL;
     uint32_t run_ms = 1000;
+    int rounded_mask_px = 0;
     bool headless = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--headless")) {
@@ -487,6 +522,13 @@ int main(int argc, char **argv)
                 return 2;
             }
             run_ms = (uint32_t)value;
+        } else if (!strcmp(argv[i], "--rounded-mask") && i + 1 < argc) {
+            long value;
+            if (!parse_long(argv[++i], 0, 4096, &value)) {
+                fprintf(stderr, "invalid --rounded-mask value\n");
+                return 2;
+            }
+            rounded_mask_px = (int)value;
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(stdout, argv[0]);
             return 0;
@@ -526,7 +568,7 @@ int main(int argc, char **argv)
     }
     if (headless || screenshot) {
         render_for(run_ms, false);
-        if (screenshot && !write_snapshot(screenshot)) {
+        if (screenshot && !write_snapshot(screenshot, rounded_mask_px)) {
             return 1;
         }
     } else {

@@ -86,6 +86,7 @@ static const char *TAG = "muse_ui";
 static int s_w, s_h;
 static bool s_small;
 static bool s_tall;         /* compact, with room above and below Muse (StickS3) */
+static bool s_passport_compact;
 static int s_canvas_px;     /* Muse's size on screen */
 static int s_dy;            /* full layout: offset from a 466 px tall screen */
 static lv_indev_t *s_indev;
@@ -880,7 +881,8 @@ static void build_screen(void)
         lv_obj_set_style_bg_opa(s_caption_lbl, LV_OPA_70, 0);
         lv_label_set_long_mode(s_caption_lbl, LV_LABEL_LONG_MODE_DOTS);
         /* Touch screens need the caption above the navigation dots too. */
-        lv_obj_align(s_caption_lbl, LV_ALIGN_BOTTOM_MID, 0, (s_tall || s_tv) ? -30 : -3);
+        int caption_bottom = s_tall ? (s_passport_compact ? -38 : -30) : (s_tv ? -30 : -3);
+        lv_obj_align(s_caption_lbl, LV_ALIGN_BOTTOM_MID, 0, caption_bottom);
 
         s_bar = lv_obj_create(face);
         lv_obj_remove_style_all(s_bar);
@@ -1492,7 +1494,8 @@ esp_err_t muse_ui_start(void)
     /* The full layout assumes room for the 466 px board's header and bottom
      * captions. Short landscape panels (BOX-3) need the compact layout too. */
     bool short_landscape = s_w > s_h && s_h < 320;
-    s_small = s_h < 200 || s_w < 200 || short_landscape;
+    s_passport_compact = !muse_board->round && s_w == 240 && s_h == 320;
+    s_small = s_h < 200 || s_w < 200 || short_landscape || s_passport_compact;
     s_tall = s_small && s_h >= s_w + 64;
     /* Small screens keep room for the status line and button icons. A narrow
      * one is as wide as Muse gets, in whole pixels. */
