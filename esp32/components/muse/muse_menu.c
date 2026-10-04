@@ -38,6 +38,10 @@
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_voice.h"
+
+#if CONFIG_MUSE_CJK_FONT && CONFIG_MUSE_BOARD_PASSPORT
+LV_FONT_DECLARE(muse_font_cjk_14);
+#endif
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_menu";
@@ -129,6 +133,7 @@ typedef enum {
     VIEW_BATTERY,
     VIEW_POWER,
     VIEW_RESET,
+    VIEW_LAST,          /* previous reply, full screen; OK leaves without talking */
 } view_t;
 
 static QueueHandle_t s_keys;
@@ -142,6 +147,11 @@ static int s_row_h;
 static float s_last_key;
 static float s_next_refresh;
 static int64_t s_batt_shown_us;   /* the battery page reads the PM stats, so once a second */
+static int s_body_cols = 16;    /* status and last-reply pages, between title and hints */
+static int s_body_rows = 4;
+static int s_status_page;
+static int s_last_page;
+static char s_last_body[1024];
 
 static lv_obj_t *s_root;
 static lv_obj_t *s_title;
@@ -302,6 +312,65 @@ static void battery_text(char *buf, size_t n)
              b.running ? "On batt" : "Last run", t, b.pct_start, b.pct_now, rate, full, off, slept, wakes, busy);
 }
 
+/* The visible page only. A 1 KB body stays in s_last_body; this is one screen of it. */
+static void show_page(const char *text, int *page)
+{
+    static char view[1024];
+    int count = 1;
+    if (*page < 0) {
+        *page = 0;
+    }
+    if (!muse_text_page(text, s_body_cols, s_body_rows, *page, view, sizeof(view), &count)) {
+        *page = count > 0 ? count - 1 : 0;
+        muse_text_page(text, s_body_cols, s_body_rows, *page, view, sizeof(view), &count);
+    }
+    set_text(s_page, view);
+    if (count > 1) {
+        char hint[24];
+        snprintf(hint, sizeof(hint), "%d/%d", *page + 1, count);
+        set_text(s_hint_down, hint);
+    } else {
+        set_text(s_hint_down, "");   /* one page: up/down do nothing, so no hint */
+    }
+}
+
+static void step_text(const char *text, int *page, int dir)
+{
+    int count = 1;
+    char scratch[4];
+    muse_text_page(text, s_body_cols, s_body_rows, 0, scratch, sizeof(scratch), &count);
+    int next = *page + dir;
+    if (count <= 1 || next < 0 || next >= count) {
+        return;
+    }
+    *page = next;
+    show_page(text, page);
+}
+
+static void render_status(void)
+{
+    char full[512];
+    status_text(full, sizeof(full));
+    show_page(full, &s_status_page);
+}
+
+static void step_status(int dir)
+{
+    char full[512];
+    status_text(full, sizeof(full));
+    step_text(full, &s_status_page, dir);
+}
+
+static void render_kept(void)
+{
+    show_page(s_last_body, &s_last_page);
+}
+
+static void step_kept(int dir)
+{
+    step_text(s_last_body, &s_last_page, dir);
+}
+
 static void refresh(void)
 {
     char buf[160];
@@ -325,8 +394,7 @@ static void refresh(void)
             s_shown_sel = s_sel;
         }
     } else if (s_view == VIEW_STATUS) {
-        status_text(buf, sizeof(buf));
-        set_text(s_page, buf);
+        render_status();
     } else if (s_view == VIEW_BATTERY) {
         int64_t now = esp_timer_get_time();
         if (!s_batt_shown_us || now - s_batt_shown_us >= 1000000) {
@@ -346,6 +414,7 @@ static const char *view_name(view_t view)
     case VIEW_BATTERY: return "battery";
     case VIEW_POWER: return "power";
     case VIEW_RESET: return "reset";
+    case VIEW_LAST: return "last";
     default: return "closed";
     }
 }
@@ -374,10 +443,19 @@ static void show(view_t view)
 
     switch (view) {
     case VIEW_STATUS:
+        set_text(s_title, "STATUS");
+        select_hint("Back");   /* OK returns to the list; Down pages, it is not Back */
+        s_status_page = 0;
+        break;
     case VIEW_BATTERY:
-        set_text(s_title, view == VIEW_STATUS ? "STATUS" : "BATTERY");
+        set_text(s_title, "BATTERY");
         set_text(s_hint_down, muse_board->keyboard ? "Esc Back" : "Back");
         select_hint("Back");
+        break;
+    case VIEW_LAST:
+        set_text(s_title, "LAST");
+        select_hint("Back");   /* OK returns home and must not start talk */
+        render_kept();
         break;
     case VIEW_POWER: {
         char text[96];
@@ -413,6 +491,21 @@ static void open_menu(void)
     lv_obj_move_foreground(s_root);
     lv_obj_remove_flag(s_root, LV_OBJ_FLAG_HIDDEN);
     show(VIEW_LIST);
+    s_open = true;
+}
+
+/* Covered, so the talk button is Select. Select on this view closes it. */
+static void open_last(void)
+{
+    if (!s_root || !muse_hatch_last_reply(s_last_body, sizeof(s_last_body))) {
+        ESP_LOGI(TAG, "no previous reply");
+        return;
+    }
+    ESP_LOGI(TAG, "last reply");
+    s_last_page = 0;
+    lv_obj_move_foreground(s_root);
+    lv_obj_remove_flag(s_root, LV_OBJ_FLAG_HIDDEN);
+    show(VIEW_LAST);
     s_open = true;
 }
 
@@ -472,8 +565,12 @@ static void handle(muse_menu_key_t key)
 {
     switch (s_view) {
     case VIEW_CLOSED:
-        if (key == MUSE_MENU_DOWN || key == MUSE_MENU_UP ||
-            key == MUSE_MENU_BACK || key == MUSE_MENU_SELECT) open_menu();
+        if (key == MUSE_MENU_LAST) {
+            open_last();
+        } else if (key == MUSE_MENU_DOWN || key == MUSE_MENU_UP ||
+                   key == MUSE_MENU_BACK || key == MUSE_MENU_SELECT) {
+            open_menu();
+        }
         break;
     case VIEW_LIST:
         if (key == MUSE_MENU_BACK) {
@@ -488,6 +585,14 @@ static void handle(muse_menu_key_t key)
         }
         break;
     case VIEW_STATUS:
+        if (key == MUSE_MENU_UP) {
+            step_status(-1);
+        } else if (key == MUSE_MENU_DOWN) {
+            step_status(1);
+        } else if (key == MUSE_MENU_BACK || key == MUSE_MENU_LEFT || key == MUSE_MENU_SELECT) {
+            show(VIEW_LIST);
+        }
+        break;
     case VIEW_BATTERY:
         if (key == MUSE_MENU_BACK || key == MUSE_MENU_LEFT ||
             key == MUSE_MENU_SELECT || key == MUSE_MENU_DOWN) show(VIEW_LIST);
@@ -505,6 +610,15 @@ static void handle(muse_menu_key_t key)
                 muse_state_set_caption("RESETTING...");
                 muse_link_reset_setup();
             }
+        }
+        break;
+    case VIEW_LAST:
+        if (key == MUSE_MENU_UP) {
+            step_kept(-1);
+        } else if (key == MUSE_MENU_DOWN) {
+            step_kept(1);
+        } else if (key == MUSE_MENU_SELECT || key == MUSE_MENU_BACK) {
+            muse_menu_close();
         }
         break;
     }
@@ -594,6 +708,12 @@ void muse_menu_build(lv_obj_t *parent, int w, int h)
     }
 
     s_page = label(s_root, fine, COLOR_TEXT, "");
+#if CONFIG_MUSE_CJK_FONT && CONFIG_MUSE_BOARD_PASSPORT
+    /* Home captions use this face. The reader should too, not unscii. */
+    if (!small) {
+        lv_obj_set_style_text_font(s_page, &muse_font_cjk_14, 0);
+    }
+#endif
     lv_obj_set_width(s_page, w - 4 * pad - strip);
     lv_obj_set_style_text_line_space(s_page, small ? 3 : 8, 0);
     lv_label_set_long_mode(s_page, LV_LABEL_LONG_MODE_WRAP);
@@ -622,6 +742,27 @@ void muse_menu_build(lv_obj_t *parent, int w, int h)
     }
     s_hint_select = label(s_root, font, COLOR_TEXT, "");
     align_on_bar(s_hint_select, talk->align, pad);
+
+    /* Body sits between the title and the hint bar. Whole pages, not a pixel scroll. */
+    int body_h = h - hint_h - (title_h + pad);
+    const lv_font_t *body_font = lv_obj_get_style_text_font(s_page, 0);
+    int cw = lv_font_get_glyph_width(body_font, 'M', ' ');
+    int pitch = lv_font_get_line_height(body_font) + lv_obj_get_style_text_line_space(s_page, 0);
+    int body_w = w - 4 * pad - strip;
+    if (cw < 1) {
+        cw = 8;
+    }
+    if (pitch < 1) {
+        pitch = 16;
+    }
+    s_body_cols = body_w / cw;
+    if (s_body_cols < 4) {
+        s_body_cols = 4;
+    }
+    s_body_rows = body_h / pitch;
+    if (s_body_rows < 1) {
+        s_body_rows = 1;
+    }
 }
 
 bool muse_menu_tick(float now)

@@ -23,6 +23,9 @@
 /*
  * Menu for boards without touch, in place of the settings tile.
  * On two-button boards, aux opens it and steps down; talk selects.
+ * Passport home: a short UP opens it, a short DOWN shows the previous reply.
+ * Inside the list, UP and DOWN still move. On that reply page, OK returns
+ * home and does not start talk.
  * Keyboard boards use arrows, Enter and Esc, leaving Space/GO for talk.
  * Hints above the buttons say what each one does.
  */
@@ -34,6 +37,7 @@ typedef enum {
     MUSE_MENU_LEFT,     /* decrease the selected value */
     MUSE_MENU_RIGHT,    /* increase the selected value */
     MUSE_MENU_BACK,     /* open from the face, otherwise back/cancel */
+    MUSE_MENU_LAST,     /* home only: previous reply, when one was kept */
 } muse_menu_key_t;
 
 /* Safe from any task. */

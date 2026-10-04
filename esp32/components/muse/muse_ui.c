@@ -118,6 +118,7 @@ static lv_obj_t *s_meter[METER_SEGS];
 static lv_obj_t *s_speaker;
 static lv_obj_t *s_speaker_icon;
 static lv_obj_t *s_aux_icon;
+static lv_obj_t *s_prev_icon;   /* passport: previous reply, beside the down key */
 static lv_obj_t *s_image;   /* display.draw_url, over the face */
 #if CONFIG_MUSE_WATCHER_CAMERA
 static lv_obj_t *s_camera_hint;
@@ -161,7 +162,7 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[4];       /* what it covers */
+    lv_obj_t *hides[6];       /* labels plus the button icons a reply covers */
 } answer_layout_t;
 
 enum { ANSWER_HEARD, ANSWER_READ };
@@ -441,6 +442,24 @@ static void build_button_icons(lv_obj_t *face)
     s_aux_icon = make_label(face, s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28, COLOR_DIM);
     lv_label_set_text(s_aux_icon, muse_board->touch ? LV_SYMBOL_POWER : LV_SYMBOL_LIST);
     lv_obj_align(s_aux_icon, a->align, a->x, a->y);
+
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Outer edge of each icon, not its centre. 5% of 240x320 is 12px and 16px.
+     * Menu-bar words keep talk_hint and aux_hint. */
+    int right = muse_board->width * 5 / 100;
+    int vert = muse_board->height * 5 / 100;
+    if (right < 8) {
+        right = 8;
+    }
+    if (vert < 8) {
+        vert = 8;
+    }
+    lv_obj_align(s_aux_icon, LV_ALIGN_TOP_RIGHT, -right, vert);
+    lv_obj_align(s_mic_icon, LV_ALIGN_BOTTOM_RIGHT, -right, -vert);
+    s_prev_icon = make_label(face, s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28, COLOR_DIM);
+    lv_label_set_text(s_prev_icon, LV_SYMBOL_PREV);
+    lv_obj_align(s_prev_icon, LV_ALIGN_TOP_RIGHT, -right, muse_board->height * 45 / 100);
+#endif
 }
 
 static void on_canvas_clicked(lv_event_t *e)
@@ -644,8 +663,9 @@ static void add_hides(answer_layout_t *l, int n)
         .x1 = s_w / 2 - l->w / 2, .y1 = s_h / 2 + l->top,
         .x2 = s_w / 2 + l->w / 2 - 1, .y2 = s_h / 2 + l->top + l->h - 1,
     };
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon };
-    for (size_t i = 0; i < 2; i++) {
+    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, s_prev_icon };
+    const size_t cap = sizeof(l->hides) / sizeof(l->hides[0]);
+    for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]) && (size_t)n < cap; i++) {
         if (!hints[i]) {
             continue;   /* no aux icon on this board */
         }

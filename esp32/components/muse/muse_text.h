@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -39,6 +40,13 @@ void muse_text_to_ascii(char *s, size_t cap);
 
 /* text, or if it needs stand-ins and fits in cap bytes, a copy with them in buf. */
 const char *muse_text_showable(const char *text, char *buf, size_t cap);
+
+/*
+ * Page `index` (from 0) of `text`, wrapped like a caption to `cols` by `lines`.
+ * Pages do not overlap. *count is the number of pages, at least 1.
+ * False when `index` is outside that range. Implemented in muse_chat_text.c.
+ */
+bool muse_text_page(const char *text, int cols, int lines, int index, char *out, size_t cap, int *count);
 
 #ifdef __cplusplus
 }

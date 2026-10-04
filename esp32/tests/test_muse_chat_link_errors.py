@@ -67,7 +67,7 @@ static int next_id, allocation_attempts, fail_allocation, fail_send;
 static size_t largest_reallocation;
 static int operations[20], operation_count;
 static void operation(int n) { if(operation_count<20) operations[operation_count++]=n; }
-static void *test_malloc(size_t n) {
+__attribute__((unused)) static void *test_malloc(size_t n) {
     allocation_attempts++;
     if(fail_allocation) { fail_allocation--; return NULL; }
     return malloc(n);
@@ -114,6 +114,13 @@ size_t muse_hatch_base64(const uint8_t *p,size_t n,char *out) {
 void muse_hatch_tail_words(const char *text,char *out,size_t cap) { strlcpy(out,text,cap); }
 bool muse_hatch_caption_at(const char *text,size_t at,char *out,size_t cap) {
     (void)at; strlcpy(out,text,cap); return text[0]!=0;
+}
+static char s_kept[1024];
+void muse_hatch_keep_reply(const char *text) {
+    s_kept[0] = 0; if (text) strlcpy(s_kept, text, sizeof(s_kept));
+}
+bool muse_hatch_last_reply(char *out, size_t cap) {
+    if (!s_kept[0]) return false; strlcpy(out, s_kept, cap); return true;
 }
 #define malloc test_malloc
 #define realloc test_realloc
@@ -226,7 +233,10 @@ static void unicode_and_fields(void) {
     assert(!s_pending_count); final("good","note","Recovered"); assert_replied("Recovered");
 }
 static void retry_and_stale(void) {
-    fail_allocation=1; muse_hatch_turn_begin(); assert(s_turn.phase==T_IDLE && strstr(s_turn.error,"MEMORY"));
+    /* Stage and chunk are static. A failed heap allocation must not abort the turn. */
+    fail_allocation=1; muse_hatch_turn_begin();
+    assert(s_turn.phase==T_TALKING && s_turn.error[0]==0);
+    fail_allocation=0; muse_hatch_turn_cancel();
     begin(); release();
     char big[ACK_MAX+1]; memset(big,'x',sizeof(big)); feed(RX_NOTE,200,big,sizeof(big),true);
     pump(); assert(s_turn.phase==T_IDLE && s_turn.error[0]);

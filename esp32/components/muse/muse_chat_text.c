@@ -26,6 +26,13 @@
 #include "muse_state.h"
 #include "muse_text.h"
 
+#if defined(__has_include)
+#  if __has_include("freertos/FreeRTOS.h")
+#    include "freertos/FreeRTOS.h"
+#    define LAST_REPLY_LOCKED 1
+#  endif
+#endif
+
 #define CAPTION_CHARS 32   /* what fits across the round screen */
 #define CONSOLE_LINE 400   /* one "@chat" line */
 #define CONSOLE_TEXT 240   /* escaped text per line */
@@ -233,6 +240,60 @@ bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
     return true;
 }
 
+/*
+ * Whole pages for a key press: the next page starts on the next line, so a
+ * manual turn never repeats the line the caption's auto-scroll overlaps.
+ */
+bool muse_text_page(const char *text, int cols, int lines, int index, char *out, size_t cap, int *count)
+{
+    if (cols < 1) {
+        cols = 1;
+    }
+    if (lines < 1) {
+        lines = 1;
+    }
+    if (!text) {
+        text = "";
+    }
+    if (out && cap) {
+        out[0] = '\0';
+    }
+    const char *p = text, *start;
+    size_t len;
+    int nlines = 0;
+    while (next_line(&p, cols, &start, &len)) {
+        nlines++;
+    }
+    int pages = nlines > 0 ? (nlines + lines - 1) / lines : 1;
+    if (count) {
+        *count = pages;
+    }
+    if (!out || cap == 0 || index < 0 || index >= pages) {
+        return index >= 0 && index < pages;
+    }
+
+    p = text;
+    int n = 0;
+    int first = index * lines;
+    size_t o = 0;
+    out[0] = '\0';
+    while (n < first + lines && next_line(&p, cols, &start, &len)) {
+        if (n >= first) {
+            if (o + (o ? 1 : 0) + len + 1 > cap) {
+                break;   /* whole lines only */
+            }
+            if (o) {
+                out[o++] = '\n';
+            }
+            memcpy(out + o, start, len);
+            o += len;
+            out[o] = '\0';
+        }
+        n++;
+    }
+    return true;
+}
+
 /* ---- Typed turns on the serial console ---- */
 
 /* JSON-escapes whole characters of *src into out, up to cap - 1 bytes; moves *src past them. */
@@ -321,4 +382,44 @@ size_t muse_hatch_unescape(char *s)
     }
     *o = '\0';
     return o - s;
+}
+
+/* One completed reply, kept after the live caption is cleared. Not the
+ * in-progress turn: that still scrolls on the home caption. */
+#define LAST_REPLY_MAX 1024
+static char s_last_reply[LAST_REPLY_MAX];
+#ifdef LAST_REPLY_LOCKED
+static portMUX_TYPE s_last_lock = portMUX_INITIALIZER_UNLOCKED;
+#endif
+
+void muse_hatch_keep_reply(const char *text)
+{
+    if (!text || !text[0]) {
+        return;
+    }
+#ifdef LAST_REPLY_LOCKED
+    portENTER_CRITICAL(&s_last_lock);
+#endif
+    strlcpy(s_last_reply, text, sizeof(s_last_reply));
+#ifdef LAST_REPLY_LOCKED
+    portEXIT_CRITICAL(&s_last_lock);
+#endif
+}
+
+bool muse_hatch_last_reply(char *out, size_t cap)
+{
+    if (!out || cap == 0) {
+        return false;
+    }
+#ifdef LAST_REPLY_LOCKED
+    portENTER_CRITICAL(&s_last_lock);
+#endif
+    bool kept = s_last_reply[0] != '\0';
+    if (kept) {
+        strlcpy(out, s_last_reply, cap);
+    }
+#ifdef LAST_REPLY_LOCKED
+    portEXIT_CRITICAL(&s_last_lock);
+#endif
+    return kept;
 }

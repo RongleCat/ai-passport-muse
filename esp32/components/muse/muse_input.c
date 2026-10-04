@@ -182,7 +182,22 @@ static void aux_button(bool pressed, bool edge)
     }
 }
 
-/* No touch: the aux button opens the menu and steps down it; any press wakes. */
+/* Pairing owns the screen. Home keys must not open the menu or the last reply. */
+static bool pairing_blocks_nav(void)
+{
+#if CONFIG_MUSE_BOARD_PASSPORT
+    muse_link_state_t link = muse_link_state();
+    return link == MUSE_LINK_PAIRING || link == MUSE_LINK_CONFIRM;
+#else
+    return false;
+#endif
+}
+
+/*
+ * No touch: aux steps down an open menu, and wakes the screen.
+ * On the passport home screen the same short press opens the previous reply.
+ * The press that opens a view is not also a step: the next press steps.
+ */
 static void menu_button(bool pressed, bool edge)
 {
     if (!edge || !pressed) {
@@ -190,10 +205,19 @@ static void menu_button(bool pressed, bool edge)
     }
     if (muse_state_asleep()) {
         set_asleep(false, muse_board->aux_button);
-    } else if (!s_talk_down) {
-        muse_state_poke();
-        muse_menu_key(MUSE_MENU_DOWN);
+        return;
     }
+    if (s_talk_down || pairing_blocks_nav()) {
+        return;
+    }
+    muse_state_poke();
+#if CONFIG_MUSE_BOARD_PASSPORT
+    if (!muse_menu_is_open()) {
+        muse_menu_key(MUSE_MENU_LAST);
+        return;
+    }
+#endif
+    muse_menu_key(MUSE_MENU_DOWN);
 }
 
 static void aux_key(bool pressed, bool edge)
@@ -283,6 +307,9 @@ static void keyboard_buttons(unsigned ev)
     }
     if (muse_state_asleep()) {
         set_asleep(false, "keyboard");
+        return;
+    }
+    if (pairing_blocks_nav()) {
         return;
     }
     muse_state_poke();

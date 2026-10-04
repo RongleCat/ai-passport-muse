@@ -980,6 +980,7 @@ static unsigned poll_buttons(void)
             last_log = now;
         }
     }
+    /* OK talks. UP opens the menu from home. DOWN opens the previous reply there. */
     unsigned ev = 0;
     if (edges.released == PASSPORT_KEY_OK) {
         ev |= MUSE_BTN_TALK_RELEASE;

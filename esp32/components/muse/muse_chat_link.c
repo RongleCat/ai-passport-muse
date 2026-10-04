@@ -758,6 +758,8 @@ static void pump(void)
     }
     if (s_turn.replied) {
         if (scroll(now) && now - s_turn.t_reply > SETTLE_US) {
+            /* The caption is cleared with the turn. The reader still needs this body. */
+            muse_hatch_keep_reply(s_turn.text);
             end_turn();
             emit(MUSE_HATCH_EV_DONE, NULL);
         }
