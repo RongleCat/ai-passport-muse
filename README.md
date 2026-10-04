@@ -22,6 +22,21 @@ limitations under the License.
 
 板级引脚和内存测量在 [`esp32/devices/passport.md`](esp32/devices/passport.md)。
 
+<p align="center">
+  <a href="https://x.com/cgnot996"><img src="https://img.shields.io/badge/X-铁柱AGI%20%40cgnot996-black?logo=x&logoColor=white" alt="X 铁柱AGI" /></a>
+  <img src="https://img.shields.io/badge/微信公众号-铁柱AGI-07C160?logo=wechat&logoColor=white" alt="微信公众号 铁柱AGI" />
+</p>
+
+<p align="center">
+  <a href="https://x.com/cgnot996">关注 X @cgnot996</a>
+  ·
+  微信搜一搜「铁柱AGI」，或扫下面的码关注公众号
+</p>
+
+<p align="center">
+  <img src="assets/wechat/mp-search-scan.png" alt="微信搜一搜 铁柱AGI，扫码关注公众号" width="420" />
+</p>
+
 ## 准备
 
 - 一块 FoloToy AI Passport，以及一根能传数据的 USB 线。
@@ -108,8 +123,8 @@ idf.py -p /dev/cu.usbmodem1101 -B build-passport monitor
 已经配对过的设备，刷完会自己连上原来的 Wi-Fi。新设备在 Muse App 里添加，名字是 `MuseGadget-` 加后面几位。屏幕提示确认时，按一下 OK。
 
 - 按住 OK 录音，松开后发送。等这条回复出现在屏幕上，再按下一次。
-- DOWN 打开菜单并向下移动，UP 向上移动。
-- 解除配对只走菜单里的 Reset pairing。这块板没有“长按 5 秒恢复出厂”的手势。
+- 主页短按 UP 打开菜单，短按 DOWN 看上一条回复。进了菜单以后，UP / DOWN 移动，OK 确认。
+- 解除配对只走菜单里的「重置配对」。这块板没有“长按 5 秒恢复出厂”的手势。
 
 ## 注意事项
 
@@ -148,7 +163,9 @@ python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
   write-flash @flash_args
 ```
 
-Release every button before flashing. GPIO0 is the key ladder and the boot strap. Do not use `idf.py flash` with ESP-IDF 6.0.1 here. Do not pass `--erase-all` or run `erase-flash`; that wipes pairing, Wi-Fi, and screen settings in NVS. Do not run `tools/muse/board.sh build` against this tree; it deletes `managed_components`. Opening the serial port often resets the board. Pair from the Muse app as `MuseGadget-…`, and confirm with OK. DOWN opens the menu, UP moves up, and unpairing is the menu item Reset pairing.
+Release every button before flashing. GPIO0 is the key ladder and the boot strap. Do not use `idf.py flash` with ESP-IDF 6.0.1 here. Do not pass `--erase-all` or run `erase-flash`; that wipes pairing, Wi-Fi, and screen settings in NVS. Do not run `tools/muse/board.sh build` against this tree; it deletes `managed_components`. Opening the serial port often resets the board. Pair from the Muse app as `MuseGadget-…`, and confirm with OK. On the home screen, a short UP opens the menu and a short DOWN shows the previous reply. Inside the menu, UP and DOWN move and OK confirms. Unpairing is the menu item 重置配对.
+
+Follow [铁柱AGI on X](https://x.com/cgnot996) (@cgnot996). On WeChat, search 铁柱AGI or scan the image in the Chinese section above.
 
 ## 上游项目：Muse Gadgets
 
