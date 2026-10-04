@@ -2050,6 +2050,64 @@ static void idle_wait(esp_tls_t *tls, uint64_t last_busy_us) {
     lwip_select(fd + 1, &rd, nullptr, nullptr, &tv);
 }
 
+#if SMALL_CONTROL_SESSION
+// The two 17 KB blocks fit once, before the display and the radio settle.
+// Releasing them on the way down leaves no hole for the next connect: after
+// the upgrade the largest free block was 9728, and the receive buffer needs
+// 17408. The link then stays down, and the next press is CAN'T REACH MUSE.
+// Keep the set for the life of the process and reuse it on every reconnect.
+static uint8_t *s_kept_ws;
+static uint8_t *s_kept_rx;
+static uint8_t *s_kept_svc;
+static uint8_t *s_kept_env;
+static uint8_t *s_kept_tf;
+static uint8_t *s_kept_sr;
+
+static uint8_t *keep_alloc(size_t n) {
+    uint8_t *p = static_cast<uint8_t *>(
+        heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!p) p = static_cast<uint8_t *>(malloc(n));
+    return p;
+}
+
+static void keep_release(void) {
+    free(s_kept_ws);
+    free(s_kept_rx);
+    free(s_kept_svc);
+    free(s_kept_env);
+    free(s_kept_tf);
+    free(s_kept_sr);
+    s_kept_ws = s_kept_rx = s_kept_svc = nullptr;
+    s_kept_env = s_kept_tf = s_kept_sr = nullptr;
+}
+
+static bool keep_session_bufs(void) {
+    bool service_in_rx = WS_RX_BUF_SIZE >= SVC_FRAME_SCRATCH;
+    if (s_kept_ws && s_kept_rx && s_kept_svc && s_kept_env && s_kept_tf
+        && (service_in_rx || s_kept_sr)) {
+        return true;
+    }
+    s_kept_ws = keep_alloc(WS_BUF_SIZE);
+    s_kept_rx = keep_alloc(WS_RX_BUF_SIZE);
+    s_kept_svc = keep_alloc(OUT_SVC_SCRATCH);
+    s_kept_env = keep_alloc(OUT_ENV_SCRATCH);
+    s_kept_tf = keep_alloc(SVC_FRAME_SCRATCH);
+    if (!service_in_rx) s_kept_sr = keep_alloc(SVC_FRAME_SCRATCH);
+    if (!s_kept_ws || !s_kept_rx || !s_kept_svc || !s_kept_env || !s_kept_tf
+        || (!service_in_rx && !s_kept_sr)) {
+        ESP_LOGE(TAG, "session buffer alloc failed ws=%d rx=%d tf=%d largest=%u",
+                 s_kept_ws != nullptr, s_kept_rx != nullptr, s_kept_tf != nullptr,
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        keep_release();
+        return false;
+    }
+    ESP_LOGI(TAG, "session buffers kept rx=%u scratch=%u largest=%u",
+             (unsigned)WS_RX_BUF_SIZE, (unsigned)SVC_FRAME_SCRATCH,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    return true;
+}
+#endif
+
 static session_result_t run_session(stack_monitor_t *stack) {
     s_ws_tx = {};
     s_tls_out_held = false;
@@ -2058,9 +2116,26 @@ static session_result_t run_session(stack_monitor_t *stack) {
     uint8_t *ws_buf = nullptr, *rx_buf = nullptr;
     uint8_t *svc_scratch = nullptr, *env_scratch = nullptr;
     uint8_t *tf_scratch = nullptr, *sr_scratch = nullptr;
+    // Open() reads the ciphertext in rx_buf and writes plaintext into
+    // tf_scratch. The service frame is decoded only after that, so rx_buf can
+    // be the service scratch. A second 17 KB block is what pushed this board's
+    // largest free chunk under the TLS record and stalled voice sends.
+    const bool service_in_rx = WS_RX_BUF_SIZE >= SVC_FRAME_SCRATCH;
     noise_ctrl_session_generation_t session_generation = 0;
     pending_json_body control_tx;
     identity_fetch identity = {};
+
+#if SMALL_CONTROL_SESSION
+    // Before TLS, while the hole still exists. A failed upgrade must not
+    // throw the blocks away: the next try will not find them.
+    if (!keep_session_bufs()) return SESSION_FAILED;
+    ws_buf = s_kept_ws;
+    rx_buf = s_kept_rx;
+    svc_scratch = s_kept_svc;
+    env_scratch = s_kept_env;
+    tf_scratch = s_kept_tf;
+    sr_scratch = s_kept_sr;
+#endif
 
     // 1. TLS connect
     esp_tls_t *tls = nullptr;
@@ -2102,11 +2177,13 @@ static session_result_t run_session(stack_monitor_t *stack) {
     }
     ESP_LOGI(TAG, "WebSocket upgraded to %s", NOISE_PATH);
 
-    // Allocate session-scoped buffers.
+    // Allocate session-scoped buffers. The no-PSRAM session keeps its set
+    // across reconnects; see keep_session_bufs().
     PsaCryptoBackend crypto;
     ClientSession session(crypto);
 
     size_t ws_buf_size = WS_BUF_SIZE;
+#if !SMALL_CONTROL_SESSION
     ws_buf = static_cast<uint8_t *>(
         heap_caps_malloc(ws_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!ws_buf) ws_buf = static_cast<uint8_t *>(malloc(ws_buf_size));
@@ -2132,7 +2209,6 @@ static session_result_t run_session(stack_monitor_t *stack) {
     // tf_scratch. The service frame is decoded only after that, so rx_buf can
     // be the service scratch. A second 17 KB block is what pushed this board's
     // largest free chunk under the TLS record and stalled voice sends.
-    bool service_in_rx = WS_RX_BUF_SIZE >= SVC_FRAME_SCRATCH;
     if (!service_in_rx) {
         sr_scratch = static_cast<uint8_t *>(
             heap_caps_malloc(SVC_FRAME_SCRATCH, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -2146,6 +2222,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         goto cleanup;
     }
+#endif
     ESP_LOGI(TAG, "session buffers rx=%u scratch=%u int=%u/%u dma=%u/%u",
              (unsigned)WS_RX_BUF_SIZE, (unsigned)SVC_FRAME_SCRATCH,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -2533,13 +2610,15 @@ cleanup:
     s_tls_out_held = false;
     s_tx_needs_read = false;
     clear_pending_json_body(control_tx);
+#if !SMALL_CONTROL_SESSION
     free(ws_buf);
-    free(identity.body);
     free(rx_buf);
     free(svc_scratch);
     free(env_scratch);
     free(tf_scratch);
     free(sr_scratch);
+#endif
+    free(identity.body);
     esp_tls_conn_destroy(tls);
     return result;
 }
