@@ -28,6 +28,10 @@
 #include "esp_timer.h"
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
+#include "sdkconfig.h"
+#if CONFIG_MUSE_HTTP_PROXY
+#include "http_proxy.h"
+#endif
 #include "esp_random.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -97,8 +101,10 @@ static char s_noise_host[256] = NOISE_DEFAULT_HOST;
 // Max inbound service frame scratch. Daemon control responses are modest JSON,
 // but the tunnel stream (multiplexed on this session) carries ~8 KB IP-packet
 // batches, so scratch must fit a full batch plus ServiceFrame/envelope overhead.
-// Chat subscriptions deliver 16 KB body chunks plus framing, even on boards
-// without PSRAM. Reserve enough inbound space for those frames.
+// Chat replies arrive as one body chunk. On the Passport a short note fits
+// in 16424 bytes. A frame past this scratch is treated as a dead connection.
+// 20 KB was tried: the alloc succeeds, then the largest free block stays
+// near 7 KB and never returns to the 14 KB a voice send needs.
 #define SVC_FRAME_SCRATCH (SMALL_CONTROL_SESSION ? 17 * 1024 : 12288)
 
 // The ADV and the Passport cannot allocate the session with the larger inbound
@@ -159,7 +165,11 @@ static bool s_register_acked = false;
 static bool s_heartbeat_registered = false;
 static TaskHandle_t s_task = nullptr;
 
-#define NOISE_CTRL_STACK 12288
+/* Peak use on a voice hold was 5888 bytes, including the 2048-byte send
+ * chunk. 9216 leaves about 3 KB. The rest stays in the one free block:
+ * a second turn takes two ~4.5 KB sends out of it and the reply record
+ * is 8365, which does not fit in the 8192 that was left. */
+#define NOISE_CTRL_STACK 9216
 #if CONFIG_MUSE_ENABLED && CONFIG_SPIRAM
 // Muse's display and audio leave internal RAM fragmented by the time a session
 // starts, often without a 12 KB block for this stack. Hold one from boot and
@@ -237,6 +247,145 @@ static ssize_t write_all(esp_tls_t *tls, const void *buf, size_t len) {
         }
     }
     return static_cast<ssize_t>(off);
+}
+
+// One Noise frame already masked into ws_buf, waiting on a full TCP window.
+// Sitting in write_all until it drains never reads the socket, so the peer's
+// window update stays unread and the voice queue reports CAN'T KEEP UP.
+// The session loop finishes this, then reads, then seals the next frame.
+// Handshake still uses write_all on the blocking socket.
+enum class wire_result : int8_t { Failed = -1, Paused = 0, Done = 1 };
+
+static constexpr int64_t WS_TX_BUDGET_US = 8000;
+// esp_mbedtls_add_tx_buffer allocates the full OUT record (about 4.4 KB) on
+// every ssl_write, and it frees the idle record first. If that alloc fails,
+// the sequence counters are already gone and the Noise session is poisoned.
+// 512 bytes over the content length covers the record header the port adds.
+static constexpr size_t TLS_OUT_BLOCK = CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN + 512;
+
+struct ws_tx_pause {
+    bool active;
+    uint8_t hdr[14];
+    uint8_t mask[4];
+    size_t hdr_len;
+    size_t hdr_off;
+    size_t payload_len;
+    size_t payload_off;
+};
+
+static ws_tx_pause s_ws_tx;
+// True while a WANT_READ/WANT_WRITE left the OUT record allocated. The next
+// ssl_write reuses it, so a tight heap must not block that resume.
+static bool s_tls_out_held;
+// The paused write is waiting for a peer record. The reply must be read
+// even when the free block is tight, or the TCP window never moves.
+static bool s_tx_needs_read;
+
+extern "C" bool noise_ctrl_ws_tx_busy(void) {
+    return s_ws_tx.active;
+}
+
+static wire_result write_span(esp_tls_t *tls, const uint8_t *p, size_t len, size_t *off) {
+    int64_t deadline = esp_timer_get_time() + WS_TX_BUDGET_US;
+    while (*off < len) {
+        if (!s_running) return wire_result::Failed;
+        if (!s_tls_out_held) {
+            size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            if (largest < TLS_OUT_BLOCK) {
+                static int64_t next_log_us;
+                int64_t now = esp_timer_get_time();
+                if (now >= next_log_us) {
+                    next_log_us = now + 2000000;
+                    ESP_LOGW(TAG, "ws tx waiting on a tls buffer (largest=%u)", (unsigned)largest);
+                }
+                vTaskDelay(1);
+                return wire_result::Paused;
+            }
+        }
+        size_t need = len - *off;
+        ssize_t n = esp_tls_conn_write(tls, p + *off, need);
+        if (n > 0) {
+            *off += static_cast<size_t>(n);
+            // A short write stopped on WANT_* with the record still held.
+            s_tls_out_held = static_cast<size_t>(n) < need;
+            s_tx_needs_read = false;
+            continue;
+        }
+        if (n == ESP_TLS_ERR_SSL_WANT_READ || n == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            s_tls_out_held = true;
+            s_tx_needs_read = n == ESP_TLS_ERR_SSL_WANT_READ;
+            if (esp_timer_get_time() >= deadline) return wire_result::Paused;
+            vTaskDelay(1);
+            continue;
+        }
+        return wire_result::Failed;
+    }
+    return wire_result::Done;
+}
+
+static wire_result ws_tx_continue(esp_tls_t *tls, uint8_t *payload) {
+    if (!s_ws_tx.active) return wire_result::Done;
+    if (s_ws_tx.hdr_off < s_ws_tx.hdr_len) {
+        wire_result r = write_span(tls, s_ws_tx.hdr, s_ws_tx.hdr_len, &s_ws_tx.hdr_off);
+        if (r != wire_result::Done) return r;
+    }
+    // One ssl_write allocates the full OUT record. Larger pieces mean fewer
+    // alloc/free cycles while Wi-Fi is also taking internal blocks.
+    uint8_t chunk[2048];
+    while (s_ws_tx.payload_off < s_ws_tx.payload_len) {
+        size_t n = s_ws_tx.payload_len - s_ws_tx.payload_off;
+        if (n > sizeof(chunk)) n = sizeof(chunk);
+        for (size_t i = 0; i < n; i++) {
+            size_t at = s_ws_tx.payload_off + i;
+            chunk[i] = payload[at] ^ s_ws_tx.mask[at & 3];
+        }
+        size_t wrote = 0;
+        wire_result r = write_span(tls, chunk, n, &wrote);
+        s_ws_tx.payload_off += wrote;
+        if (r != wire_result::Done) {
+            static int64_t next_log_us;
+            int64_t now = esp_timer_get_time();
+            if (r == wire_result::Paused && now >= next_log_us) {
+                next_log_us = now + 2000000;
+                ESP_LOGW(TAG, "ws tx waiting on the link (%u/%u)",
+                         (unsigned)s_ws_tx.payload_off, (unsigned)s_ws_tx.payload_len);
+            }
+            return r;
+        }
+    }
+    s_ws_tx.active = false;
+    return wire_result::Done;
+}
+
+static wire_result ws_tx_begin(esp_tls_t *tls, uint8_t *payload, size_t len) {
+    uint8_t *hdr = s_ws_tx.hdr;
+    size_t hdr_len = 0;
+    hdr[0] = 0x82;
+    if (len < 126) {
+        hdr[1] = 0x80 | static_cast<uint8_t>(len);
+        hdr_len = 2;
+    } else if (len <= 65535) {
+        hdr[1] = 0x80 | 126;
+        hdr[2] = static_cast<uint8_t>((len >> 8) & 0xff);
+        hdr[3] = static_cast<uint8_t>(len & 0xff);
+        hdr_len = 4;
+    } else {
+        hdr[1] = 0x80 | 127;
+        for (int i = 0; i < 8; i++) {
+            hdr[2 + i] = static_cast<uint8_t>((len >> (56 - 8 * i)) & 0xff);
+        }
+        hdr_len = 10;
+    }
+    uint32_t mask_key = esp_random();
+    memcpy(hdr + hdr_len, &mask_key, 4);
+    memcpy(s_ws_tx.mask, &mask_key, 4);
+    hdr_len += 4;
+    s_ws_tx.hdr_len = hdr_len;
+    s_ws_tx.hdr_off = 0;
+    s_ws_tx.payload_len = len;
+    s_ws_tx.payload_off = 0;
+    s_ws_tx.active = true;
+    return ws_tx_continue(tls, payload);
 }
 
 static void make_uuid(char *out, size_t n) {
@@ -746,22 +895,27 @@ static bool noise_handshake(esp_tls_t *tls, ClientSession &session,
 
 // ---- Session: send Noise-encrypted WS frames --------------------------------
 
-static bool flush_outbound(esp_tls_t *tls, ClientSession &session,
-                           uint8_t *ws_buf) {
+static wire_result flush_outbound(esp_tls_t *tls, ClientSession &session,
+                                  uint8_t *ws_buf) {
+    // Finish the frame already sitting in ws_buf before pulling another.
+    // WriteNext overwrites ws_buf, and a second seal while this one is only
+    // partly on the wire would mix two Noise messages.
+    if (s_ws_tx.active) {
+        wire_result pending = ws_tx_continue(tls, ws_buf);
+        if (pending != wire_result::Done) return pending;
+    }
     while (session.HasOutboundWebSocketPayload()) {
         ByteSpan ws_span(ws_buf, WS_BUF_SIZE);
         auto sws = session.WriteNextOutboundWebSocketPayload(ws_span);
         if (!sws.ok()) {
             ESP_LOGE(TAG, "WriteNextOutboundWebSocketPayload failed: %s",
                      sws.status().str());
-            return false;
+            return wire_result::Failed;
         }
-        if (!ws_send_binary(tls, ws_buf, sws.size())) {
-            ESP_LOGE(TAG, "ws_send_binary failed");
-            return false;
-        }
+        wire_result sent = ws_tx_begin(tls, ws_buf, sws.size());
+        if (sent != wire_result::Done) return sent;
     }
-    return true;
+    return wire_result::Done;
 }
 
 // Owned by the session task. Registration, results and heartbeats share one
@@ -796,6 +950,9 @@ static json_send_status send_json_body_chunk(esp_tls_t *tls, ClientSession &sess
     if (body.prefix_sent && body.json_offset == body.json_len) {
         return json_send_status::Complete;
     }
+    // A frame is still in ws_buf. Copying the length prefix in now would
+    // overwrite it, and sealing the next chunk would run ahead of the socket.
+    if (s_ws_tx.active) return json_send_status::Pending;
     // Recheck both budgets before EVERY chunk, including retained registration:
     // the queue-boundary sample cannot cover later turns of a paused message.
     if (!noise_tx_has_dma_headroom(nullptr)
@@ -839,10 +996,14 @@ static json_send_status send_json_body_chunk(esp_tls_t *tls, ClientSession &sess
                  sws.status().str());
         return json_send_status::Failed;
     }
-    if (!flush_outbound(tls, session, ws_buf)) return json_send_status::Failed;
+    wire_result sent = flush_outbound(tls, session, ws_buf);
+    if (sent == wire_result::Failed) return json_send_status::Failed;
 
     body.json_offset += n;
     body.prefix_sent = true;
+    // Paused: this chunk is sealed and the unsent tail sits in ws_buf. Do not
+    // seal another until the socket write finishes.
+    if (sent == wire_result::Paused) return json_send_status::Pending;
     return last ? json_send_status::Complete : json_send_status::Pending;
 }
 
@@ -874,7 +1035,7 @@ static bool tunnel_open_stream(void *vctx) {
                  sws.status().str());
         return false;
     }
-    return flush_outbound(c->tls, *c->session, c->ws_buf);
+    return flush_outbound(c->tls, *c->session, c->ws_buf) != wire_result::Failed;
 }
 
 // Send an IP-packet batch as a BodyChunk on the tunnel stream. The batch is
@@ -894,7 +1055,7 @@ static bool tunnel_send_body(void *vctx, const uint8_t *data, size_t len) {
                  sws.status().str());
         return false;
     }
-    return flush_outbound(c->tls, *c->session, c->ws_buf);
+    return flush_outbound(c->tls, *c->session, c->ws_buf) != wire_result::Failed;
 }
 
 // ---- Extra daemon requests (noise_ctrl_req_*) --------------------------------
@@ -904,7 +1065,7 @@ static bool tunnel_send_body(void *vctx, const uint8_t *data, size_t len) {
 
 // Stream ids from here up belong to these requests; lower ids are Link's own.
 #define REQ_STREAM_BASE 16
-#define REQ_MAX_STREAMS 3
+#define REQ_MAX_STREAMS 6
 #define REQ_QUEUE_LEN   6
 #define REQ_MAX_HEADERS 6
 // Body bytes queued at once. Without PSRAM a larger backlog leaves no block big
@@ -974,10 +1135,21 @@ static void req_fail(req_stream *s) {
     gone.cb(gone.ctx, -1, nullptr, 0, true);
 }
 
+// One body lifted out of the heap while the TLS record has no contiguous
+// block. BSS, so the lift itself does not take another hole.
+// The last note chunk is the base64 body plus the short JSON tail.
+static uint8_t s_req_hold[CTRL_BODY_CHUNK_MAX + 64];
+static req_op s_req_held;
+static bool s_req_holding;
+
 // The session is gone, and every request with it.
 static void req_end_all(void) {
     req_op op;
     while (req_take(&op)) req_drop(op);
+    // The queue is empty. A count left high makes later sends wait out
+    // REQ_QUEUE_BYTES and fail with CAN'T KEEP UP while the session is up.
+    s_req_queued_bytes.store(0);
+    s_req_holding = false;
     for (auto &s : s_req_streams) {
         if (s.id) req_fail(&s);
     }
@@ -1018,25 +1190,15 @@ static bool req_open(esp_tls_t *tls, ClientSession &session, req_op &op,
     ESP_LOGD(TAG, "request %lld: %s %s", (long long)op.id, verb, path);
     *slot = {op.id, op.cb, op.ctx};
     free(op.data);
-    return flush_outbound(tls, session, ws_buf);
+    return flush_outbound(tls, session, ws_buf) != wire_result::Failed;
 }
 
-// Sends at most one queued request operation per loop turn. False only if the
-// transport failed.
-static bool req_pump_tx(esp_tls_t *tls, ClientSession &session,
-                        uint8_t *svc_scratch, uint8_t *env_scratch,
-                        uint8_t *ws_buf, bool *did) {
-    // The loop turns every tick; the heap checks below walk the heap, so only
-    // when there is something to send.
-    if (!uxQueueMessagesWaiting(s_req_q)) return true;
-    int32_t queued = s_req_queued_bytes;
-    if (!noise_tx_has_dma_headroom_reclaiming(queued > 0 ? (size_t)queued : 0)
-        || !noise_tx_has_contiguous_dma_headroom()) return true;
-    if (SMALL_CONTROL_SESSION
-        && heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < REQ_TLS_BLOCK) return true;
-    req_op op;
-    if (!req_take(&op)) return true;
-    *did = true;
+// Sends op. `owned` is a heap buffer to free after the copy into Noise scratch.
+// False only if the transport failed. A paused write is not a failure: the
+// session loop finishes it before the next seal.
+static bool req_dispatch(esp_tls_t *tls, ClientSession &session, req_op &op,
+                         uint8_t *svc_scratch, uint8_t *env_scratch,
+                         uint8_t *ws_buf, bool owned) {
     if (op.kind == req_op_kind::Open) {
         return req_open(tls, session, op, svc_scratch, env_scratch, ws_buf);
     }
@@ -1051,7 +1213,7 @@ static bool req_pump_tx(esp_tls_t *tls, ClientSession &session,
             ByteSpan(svc_scratch, OUT_SVC_SCRATCH),
             ByteSpan(env_scratch, OUT_ENV_SCRATCH));
         if (sws.ok()) {
-            ok = flush_outbound(tls, session, ws_buf);
+            ok = flush_outbound(tls, session, ws_buf) != wire_result::Failed;
         } else {
             ESP_LOGW(TAG, "request %lld: body chunk failed: %s", (long long)op.id,
                      sws.status().str());
@@ -1064,10 +1226,74 @@ static bool req_pump_tx(esp_tls_t *tls, ClientSession &session,
             ServiceType::Daemon, op.id, rv,
             ByteSpan(svc_scratch, OUT_SVC_SCRATCH),
             ByteSpan(env_scratch, OUT_ENV_SCRATCH));
-        if (sws.ok()) ok = flush_outbound(tls, session, ws_buf);
+        if (sws.ok()) ok = flush_outbound(tls, session, ws_buf) != wire_result::Failed;
     }
-    free(op.data);
+    if (owned) free(op.data);
     return ok;
+}
+
+static bool req_tls_room(size_t reclaim) {
+    bool dma_ok = noise_tx_has_dma_headroom_reclaiming(reclaim)
+        && noise_tx_has_contiguous_dma_headroom();
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    bool block_ok = !SMALL_CONTROL_SESSION || largest >= REQ_TLS_BLOCK;
+    return dma_ok && block_ok;
+}
+
+// Sends at most one queued request operation per loop turn. False only if the
+// transport failed.
+static bool req_pump_tx(esp_tls_t *tls, ClientSession &session,
+                        uint8_t *svc_scratch, uint8_t *env_scratch,
+                        uint8_t *ws_buf, bool *did) {
+    // The previous frame is still in ws_buf. Sealing another now would
+    // overwrite it. The session loop finishes the socket write first.
+    if (s_ws_tx.active) return true;
+    // A body parked in BSS is the one to send. Its heap copy is already gone,
+    // which is what lets the TLS record fit.
+    if (s_req_holding) {
+        if (!req_tls_room(0)) return true;
+        s_req_holding = false;
+        *did = true;
+        return req_dispatch(tls, session, s_req_held, svc_scratch, env_scratch, ws_buf, false);
+    }
+    // The loop turns every tick; the heap checks below walk the heap, so only
+    // when there is something to send.
+    if (!uxQueueMessagesWaiting(s_req_q)) return true;
+    int32_t queued = s_req_queued_bytes;
+    if (!req_tls_room(queued > 0 ? (size_t)queued : 0)) {
+        static int64_t next_log_us;
+        int64_t now = esp_timer_get_time();
+        if (now >= next_log_us) {
+            next_log_us = now + 2000000;
+            ESP_LOGW(TAG, "request paused: queued=%ld dma=%u/%u largest=%u",
+                     (long)queued,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        }
+        // The queued body is often the slice that keeps largest under the TLS
+        // record. Park it and free that slice; the next loop sends from BSS
+        // once the hole is back. Leaving it queued makes every later note
+        // wait out SEND_WAIT and report CAN'T KEEP UP.
+        req_op peek;
+        if (xQueuePeek(s_req_q, &peek, 0) == pdTRUE
+            && peek.kind == req_op_kind::Body
+            && peek.data && peek.len && peek.len <= sizeof(s_req_hold)) {
+            req_op op;
+            if (req_take(&op)) {
+                memcpy(s_req_hold, op.data, op.len);
+                free(op.data);
+                op.data = s_req_hold;
+                s_req_held = op;
+                s_req_holding = true;
+            }
+        }
+        return true;
+    }
+    req_op op;
+    if (!req_take(&op)) return true;
+    *did = true;
+    return req_dispatch(tls, session, op, svc_scratch, env_scratch, ws_buf, true);
 }
 
 // Request stream frames never affect the control session. Frames for a
@@ -1129,7 +1355,7 @@ static bool identity_request(esp_tls_t *tls, ClientSession &session,
                  sws.status().str());
         return true;
     }
-    return flush_outbound(tls, session, ws_buf);
+    return flush_outbound(tls, session, ws_buf) != wire_result::Failed;
 }
 
 static void identity_finish(identity_fetch &f) {
@@ -1780,6 +2006,36 @@ static void process_inbound_body_chunk(
 // IDLE_POLL_MS (POWER_SAVE_POLL_MS in power save). What the session sends
 // comes from queues that can't wake the wait, hence the cap. Polling every
 // tick when quiet cost about a tenth of a core, taken from drawing the avatar.
+// mbedtls reads a TLS header before it allocates the record. A failed
+// alloc has already consumed that header, so the session cannot retry.
+// A reply record on this board is 8365 bytes. While the send still holds
+// its OUT record, finish that send first when the next record will not
+// fit. The OUT record is what comes back into the free block.
+static constexpr size_t TLS_RX_SLACK = 1024;
+static constexpr int64_t RX_DEFER_US = 300000;
+
+static bool rx_defer_for_send(esp_tls_t *tls) {
+    if (!s_tls_out_held || s_tx_needs_read) return false;
+    if (esp_tls_get_bytes_avail(tls) > 0) return false;
+    int fd = -1;
+    if (esp_tls_get_conn_sockfd(tls, &fd) != ESP_OK || fd < 0) return false;
+    uint8_t hdr[5];
+    if (lwip_recv(fd, hdr, sizeof(hdr), MSG_PEEK) != (ssize_t)sizeof(hdr)) return false;
+    if (hdr[0] < 20 || hdr[0] > 23) return false;
+    size_t rec = (static_cast<size_t>(hdr[3]) << 8) | hdr[4];
+    if (rec == 0 || rec > 18432) return false;
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (largest >= rec + TLS_RX_SLACK) return false;
+    static int64_t next_log_us;
+    int64_t now = esp_timer_get_time();
+    if (now >= next_log_us) {
+        next_log_us = now + 2000000;
+        ESP_LOGW(TAG, "reply record waits for the send (%u > %u)",
+                 (unsigned)(rec + TLS_RX_SLACK), (unsigned)largest);
+    }
+    return true;
+}
+
 static void idle_wait(esp_tls_t *tls, uint64_t last_busy_us) {
     uint64_t quiet_us = esp_timer_get_time() - last_busy_us;
     int fd = -1;
@@ -1797,6 +2053,9 @@ static void idle_wait(esp_tls_t *tls, uint64_t last_busy_us) {
 }
 
 static session_result_t run_session(stack_monitor_t *stack) {
+    s_ws_tx = {};
+    s_tls_out_held = false;
+    s_tx_needs_read = false;
     session_result_t result = SESSION_FAILED;
     uint8_t *ws_buf = nullptr, *rx_buf = nullptr;
     uint8_t *svc_scratch = nullptr, *env_scratch = nullptr;
@@ -1806,7 +2065,14 @@ static session_result_t run_session(stack_monitor_t *stack) {
     identity_fetch identity = {};
 
     // 1. TLS connect
-    esp_tls_t *tls = esp_tls_init();
+    esp_tls_t *tls = nullptr;
+    int r = -1;
+#if CONFIG_MUSE_HTTP_PROXY
+    if (muse_tls_connect_proxy(s_noise_host, NOISE_PORT, 15000, &tls) == ESP_OK) {
+        r = 1;
+    }
+#else
+    tls = esp_tls_init();
     if (!tls) {
         ESP_LOGE(TAG, "esp_tls_init failed");
         return SESSION_FAILED;
@@ -1815,11 +2081,12 @@ static session_result_t run_session(stack_monitor_t *stack) {
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.timeout_ms = 15000;
 
-    int r = esp_tls_conn_new_sync(s_noise_host, static_cast<int>(strlen(s_noise_host)),
-                                  NOISE_PORT, &cfg, tls);
+    r = esp_tls_conn_new_sync(s_noise_host, static_cast<int>(strlen(s_noise_host)),
+                              NOISE_PORT, &cfg, tls);
+#endif
     if (r != 1) {
         ESP_LOGE(TAG, "TLS connect failed: %d", r);
-        esp_tls_conn_destroy(tls);
+        if (tls) esp_tls_conn_destroy(tls);
         return SESSION_FAILED;
     }
     ESP_LOGI(TAG, "TLS connected to %s:%d (vm_id=%s)", s_noise_host, NOISE_PORT, s_vm_id);
@@ -1837,7 +2104,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
     }
     ESP_LOGI(TAG, "WebSocket upgraded to %s", NOISE_PATH);
 
-    // Allocate session-scoped buffers
+    // Allocate session-scoped buffers.
     PsaCryptoBackend crypto;
     ClientSession session(crypto);
 
@@ -1851,7 +2118,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
     if (!rx_buf) rx_buf = static_cast<uint8_t *>(malloc(WS_RX_BUF_SIZE));
 
     // Crypto/framing scratch. PSRAM-preferred (with a heap fallback) so the
-    // 12 KB buffers don't land in internal SRAM — anything under
+    // buffers don't land in internal SRAM — anything under
     // CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL would otherwise be served from the
     // scarce internal pool that WiFi/TLS/lwIP also need.
     svc_scratch = static_cast<uint8_t *>(
@@ -1863,15 +2130,30 @@ static session_result_t run_session(stack_monitor_t *stack) {
     tf_scratch = static_cast<uint8_t *>(
         heap_caps_malloc(SVC_FRAME_SCRATCH, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!tf_scratch) tf_scratch = static_cast<uint8_t *>(malloc(SVC_FRAME_SCRATCH));
-    sr_scratch = static_cast<uint8_t *>(
-        heap_caps_malloc(SVC_FRAME_SCRATCH, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!sr_scratch) sr_scratch = static_cast<uint8_t *>(malloc(SVC_FRAME_SCRATCH));
+    // Open() reads the ciphertext in rx_buf and writes plaintext into
+    // tf_scratch. The service frame is decoded only after that, so rx_buf can
+    // be the service scratch. A second 17 KB block is what pushed this board's
+    // largest free chunk under the TLS record and stalled voice sends.
+    bool service_in_rx = WS_RX_BUF_SIZE >= SVC_FRAME_SCRATCH;
+    if (!service_in_rx) {
+        sr_scratch = static_cast<uint8_t *>(
+            heap_caps_malloc(SVC_FRAME_SCRATCH, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!sr_scratch) sr_scratch = static_cast<uint8_t *>(malloc(SVC_FRAME_SCRATCH));
+    }
 
     if (!ws_buf || !rx_buf || !svc_scratch || !env_scratch
-        || !tf_scratch || !sr_scratch) {
-        ESP_LOGE(TAG, "session buffer alloc failed");
+        || !tf_scratch || (!service_in_rx && !sr_scratch)) {
+        ESP_LOGE(TAG, "session buffer alloc failed ws=%d rx=%d tf=%d largest=%u",
+                 ws_buf != nullptr, rx_buf != nullptr, tf_scratch != nullptr,
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         goto cleanup;
     }
+    ESP_LOGI(TAG, "session buffers rx=%u scratch=%u int=%u/%u dma=%u/%u",
+             (unsigned)WS_RX_BUF_SIZE, (unsigned)SVC_FRAME_SCRATCH,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
     {  // Scoped block for event loop — avoids goto crossing variable init.
 
@@ -1901,7 +2183,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
                      open_sws.status().str());
             goto cleanup;
         }
-        if (!flush_outbound(tls, session, ws_buf)) goto cleanup;
+        if (flush_outbound(tls, session, ws_buf) == wire_result::Failed) goto cleanup;
         ESP_LOGI(TAG, "opened POST /link-control stream");
     }
 
@@ -1989,8 +2271,24 @@ static session_result_t run_session(stack_monitor_t *stack) {
         }
 #endif
 
-        // RX: try to receive a WS frame (non-blocking)
-        ssize_t n = ws_recv_frame_nonblock(tls, rx_buf, WS_RX_BUF_SIZE);
+        // RX: try to receive a WS frame (non-blocking). A reply that cannot
+        // fit while the OUT record is still held waits, up to RX_DEFER_US,
+        // so the send can return that record to the heap first.
+        static int64_t rx_defer_since;
+        ssize_t n;
+        if (rx_defer_for_send(tls)) {
+            int64_t now = esp_timer_get_time();
+            if (rx_defer_since == 0) rx_defer_since = now;
+            if (now - rx_defer_since < RX_DEFER_US) {
+                n = -2;
+            } else {
+                rx_defer_since = 0;
+                n = ws_recv_frame_nonblock(tls, rx_buf, WS_RX_BUF_SIZE);
+            }
+        } else {
+            rx_defer_since = 0;
+            n = ws_recv_frame_nonblock(tls, rx_buf, WS_RX_BUF_SIZE);
+        }
         if (n > 0) {
             did = true;
             last_activity_us = esp_timer_get_time();
@@ -1999,7 +2297,8 @@ static session_result_t run_session(stack_monitor_t *stack) {
             auto inbound = session.ProcessInboundWebSocketPayload(
                 ConstByteSpan(rx_buf, static_cast<size_t>(n)),
                 ByteSpan(tf_scratch, SVC_FRAME_SCRATCH),
-                ByteSpan(sr_scratch, SVC_FRAME_SCRATCH),
+                service_in_rx ? ByteSpan(rx_buf, WS_RX_BUF_SIZE)
+                              : ByteSpan(sr_scratch, SVC_FRAME_SCRATCH),
                 Span<HeaderView>(hdr_storage, 16));
 
             if (!inbound.ok()) {
@@ -2066,6 +2365,18 @@ static session_result_t run_session(stack_monitor_t *stack) {
             last_activity_us = last_rx_us;
         }
         // n == -2: no data available, continue
+
+        // A Noise frame is only partly written. Finish it before anyone reuses
+        // ws_buf, and read again next turn if the TCP window is still full.
+        if (s_ws_tx.active) {
+            wire_result wr = ws_tx_continue(tls, ws_buf);
+            if (wr == wire_result::Failed) {
+                ESP_LOGE(TAG, "ws_send_binary failed");
+                error = true;
+                break;
+            }
+            if (s_ws_tx.active) did = true;
+        }
 
         // TX: keep exactly one control message in flight across loop turns.
         // A paused slot prevents dequeue/serialization of the next result.
@@ -2152,7 +2463,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
         // Retry opening the tunnel stream if it went down while control is up
         // (e.g. transient backend 503). Rate-limited internally. Only after the
         // initial post-register open, so we never race registration.
-        if (tunnel_opened) {
+        if (tunnel_opened && !s_ws_tx.active) {
             noise_tunnel_maybe_reopen(&tun_emit);
         }
 
@@ -2170,7 +2481,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
         // it if pongs stop, so a half-open tunnel (WS alive, backend gone) is
         // detected and reopened by maybe_reopen above. Cheap and rate-limited
         // internally, so it's safe to call every loop iteration.
-        if (tunnel_opened) {
+        if (tunnel_opened && !s_ws_tx.active) {
             noise_tunnel_tick(&tun_emit);
         }
 
@@ -2187,7 +2498,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
         // directions see traffic and middlebox idle timers (which drop the
         // idle server→device path otherwise) stay reset. This keeps the whole
         // WebSocket transport alive; Noise session health is checked above.
-        if (!did) {
+        if (!s_ws_tx.active && !did) {
             uint64_t idle_us = esp_timer_get_time() - last_activity_us;
             if (idle_us >= static_cast<uint64_t>(KEEPALIVE_INTERVAL_MS) * 1000) {
                 if (!ws_send_ping(tls)) {
@@ -2220,6 +2531,9 @@ static session_result_t run_session(stack_monitor_t *stack) {
     }  // end event loop scope
 
 cleanup:
+    s_ws_tx = {};
+    s_tls_out_held = false;
+    s_tx_needs_read = false;
     clear_pending_json_body(control_tx);
     free(ws_buf);
     free(identity.body);

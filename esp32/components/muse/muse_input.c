@@ -601,7 +601,7 @@ static void dump_stacks(void)
         { "swdraw", 4096 },
         { "muse_input", 4096 },
         { "muse_serial", 3584 },
-        { "muse_keep", 4096 },
+        { "muse_keep", 3072 },
         { "muse_voice", 6144 },
         { "muse_boot", 3072 },
         { "nimble_host", 3072 },

@@ -21,6 +21,7 @@ set(GADGET_SRCS
     "identity.c"
     "config_store.c"
     "vm_api.c"
+    "http_proxy.c"
     "diagnostic_log.c"
     "stack_monitor.c"
     "bug_report.c"

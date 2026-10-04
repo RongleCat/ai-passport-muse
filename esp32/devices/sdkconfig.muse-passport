@@ -104,9 +104,16 @@ CONFIG_LWIP_MAX_SOCKETS=6
 CONFIG_LWIP_MAX_ACTIVE_TCP=6
 CONFIG_LWIP_MAX_LISTENING_TCP=4
 CONFIG_LWIP_MAX_UDP_PCBS=6
-# Measured main-task high water on this board was ~1 KB used of 8192 during
-# boot and the Wi-Fi join. 6144 keeps room for a later TLS call on app_main.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+# A TLS handshake through the HTTP proxy overflows 8192 bytes on app_main
+# (stack protection fault in main). 12288 is the size that stayed up.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+CONFIG_MAIN_TASK_STACK_SIZE=12288
+
+# This LAN's router cannot reach the Muse VM. CONNECT through the Mac's
+# FlClash mixed port; the Mac must stay at this address with FlClash running.
+CONFIG_MUSE_HTTP_PROXY=y
+CONFIG_MUSE_HTTP_PROXY_HOST="192.168.1.9"
+CONFIG_MUSE_HTTP_PROXY_PORT=7890
 
 # One phone at a time. Half the NimBLE pools, from the C6 and Cardputer
 # overlays, gives the pairing TLS handshake back about 9 KB.
@@ -147,6 +154,26 @@ CONFIG_SPI_FLASH_AUTO_SUSPEND=y
 # Idle capture did not drop frames with the flag off; this is the
 # cache-disabled path, next to auto-suspend, not a bigger DMA queue.
 CONFIG_I2S_ISR_IRAM_SAFE=y
+
+# IRAM and DRAM are the same SRAM. The reference image keeps these drivers in
+# flash so the heap still has one hole big enough for the two 17 KB Noise
+# buffers after the TLS handshake. The LCD, codec and gauge wait out NVS
+# writes. This does not change PM, modem sleep, tickless idle, or flash
+# auto-suspend. The BLE controller stays where the block above put it.
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+# SPI master ISR in IRAM depends on the heap staying in IRAM, so the line
+# above turns it off. GDMA's ISR stays in IRAM because I2S_ISR_IRAM_SAFE
+# selects it.
+CONFIG_SPI_SLAVE_ISR_IN_IRAM=n
+CONFIG_GDMA_CTRL_FUNC_IN_IRAM=n
+CONFIG_I2C_MASTER_ISR_HANDLER_IN_IRAM=n
+CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=n
+CONFIG_RMT_ENCODER_FUNC_IN_IRAM=n
+CONFIG_RMT_TX_ISR_HANDLER_IN_IRAM=n
+CONFIG_RMT_RX_ISR_HANDLER_IN_IRAM=n
+CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y
+CONFIG_LIBC_MISC_IN_IRAM=n
+CONFIG_ESP_EVENT_POST_FROM_IRAM_ISR=n
 
 # Light sleep, from sdkconfig.muse-aipi, in its own block so it can be turned
 # off without touching the memory settings above. On for the shipping image:

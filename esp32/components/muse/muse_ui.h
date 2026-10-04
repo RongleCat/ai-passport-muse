@@ -52,3 +52,6 @@ void muse_ui_camera_hint(bool visible);
 
 /* Bench testing, from any task: streams the screen over USB serial. */
 void muse_ui_request_snapshot(void);
+
+/* From any task: run the face timer on the LVGL task's next wake. */
+void muse_ui_kick(void);

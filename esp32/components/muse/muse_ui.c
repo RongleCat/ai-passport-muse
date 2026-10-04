@@ -130,6 +130,7 @@ static uint16_t *s_image_buf;
 static lv_area_t s_image_area;
 static bool s_image_dirty;
 static bool s_ready;
+static lv_timer_t *s_frame_timer;
 
 static float s_level;
 static int s_shown_state = -1;
@@ -148,6 +149,7 @@ static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
+static muse_mode_t s_posed_mode = MUSE_MODE_COUNT;
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -1502,15 +1504,29 @@ static void frame_tick(lv_timer_t *timer)
     float level = muse_state_level();
     s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
 
-    muse_pose_t pose = {
-        .mode = mode,
-        .t = now,
-        .mode_t = mode_t,
-        .level = s_level,
-        .happy = muse_state_happiness(),
-    };
-    muse_pixel_render(&pose);
-    invalidate_muse();
+    /* One core. A 192 px pose every frame keeps the note queue from draining.
+     * Listening skips the pose for the whole hold. Thinking and speaking draw
+     * it once, then keep the caption and the bottom bar moving. */
+#if CONFIG_MUSE_BOARD_PASSPORT
+    bool reply = mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING;
+    bool draw_pose = mode != MUSE_MODE_LISTENING && !(reply && mode == s_posed_mode);
+    if (draw_pose) {
+        s_posed_mode = mode;
+    }
+#else
+    bool draw_pose = true;
+#endif
+    if (draw_pose) {
+        muse_pose_t pose = {
+            .mode = mode,
+            .t = now,
+            .mode_t = mode_t,
+            .level = s_level,
+            .happy = muse_state_happiness(),
+        };
+        muse_pixel_render(&pose);
+        invalidate_muse();
+    }
 
     update_status(mode, now);
 }
@@ -1559,12 +1575,21 @@ esp_err_t muse_ui_start(void)
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
-    lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
+    s_frame_timer = lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;
     muse_board->display_unlock();
 
     ESP_LOGI(TAG, "UI up: %dx%d, %d px Muse, %d ms frames", s_w, s_h, s_canvas_px, muse_board->frame_ms);
     return ESP_OK;
+}
+
+void muse_ui_kick(void)
+{
+    if (!s_ready || !s_frame_timer || !muse_board->display_lock(40)) {
+        return;
+    }
+    lv_timer_ready(s_frame_timer);
+    muse_board->display_unlock();
 }
 
 void muse_ui_show_face(void)

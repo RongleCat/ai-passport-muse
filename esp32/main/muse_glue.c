@@ -648,7 +648,9 @@ void muse_glue_start(void) {
      * Other boards keep the original sizes. */
 #if CONFIG_MUSE_BOARD_PASSPORT
     const uint32_t boot_stack = 3072;
-    const uint32_t keep_stack = 4096;
+    /* Peak use measured at 1560 bytes. The spare 1 KB stays in the free
+     * block a second voice turn shares with its TLS record. */
+    const uint32_t keep_stack = 3072;
 #else
     const uint32_t boot_stack = 8192;
     const uint32_t keep_stack = 6144;

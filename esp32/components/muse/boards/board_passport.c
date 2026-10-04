@@ -591,20 +591,6 @@ static const char *key_name(passport_key_t key)
     }
 }
 
-#if CONFIG_MUSE_PASSPORT_HEAP_LOG
-static void heap_log_task(void *arg)
-{
-    (void)arg;
-    for (;;) {
-        ESP_LOGI(TAG, "internal heap free=%u min=%u largest=%u",
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
-}
-#endif
-
 static esp_err_t init(void)
 {
     release_sleep_holds();
@@ -622,11 +608,11 @@ static esp_err_t init(void)
         ESP_LOGW(TAG, "CW2017 unavailable (%s); battery meter off", esp_err_to_name(batt));
     }
     ESP_RETURN_ON_ERROR(keys_init(), TAG, "keys");
-#if CONFIG_MUSE_PASSPORT_HEAP_LOG
-    if (xTaskCreate(heap_log_task, "pass_heap", 2560, NULL, 1, NULL) != pdPASS) {
-        ESP_LOGW(TAG, "heap log task not started");
-    }
-#endif
+    /* No heap-log task. Its 2560-byte stack came out of the one free block
+     * the session leaves behind. A voice turn then puts 5120 bytes of I2S
+     * DMA there (mic and speaker, 4 x 160 stereo frames each), and the
+     * reply's TLS record is 8365. The working image keeps that block near
+     * 14 KB so both fit. The link heartbeat still prints the heap. */
     return ESP_OK;
 }
 
@@ -713,12 +699,12 @@ static lv_display_t *display_start(lv_indev_t **touch)
     heap_stage("after panel");
     esp_lv_adapter_config_t adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
     adapter_cfg.task_core_id = MUSE_UI_CORE;
-    /* One core: keep drawing below Wi-Fi and app_main, as on the C6 board.
-     * The adapter default is 8 KB. 4 KB overflowed the hardware stack guard
-     * in lv_event_send while the menu built its widgets (the guard span was
-     * a 4096-byte stack). ">stacks" prints the watermark after the fact. */
+    /* One core: keep drawing below Wi-Fi and app_main. Drawing runs on
+     * LVGL's own thread, so the adapter task is 6 KB, as on the working
+     * Passport image. 4 KB overflowed the hardware stack guard in
+     * lv_event_send while the menu built its widgets. */
     adapter_cfg.task_priority = 1;
-    adapter_cfg.task_stack_size = 8192;
+    adapter_cfg.task_stack_size = 6144;
     if (esp_lv_adapter_init(&adapter_cfg) != ESP_OK) {
         return NULL;
     }

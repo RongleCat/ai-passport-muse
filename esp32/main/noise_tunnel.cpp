@@ -37,7 +37,13 @@ static const char *TAG = "link.noise_tun";
 // MTU-sized buffers) for the chunk plus concurrent WiFi/lwIP churn. Keep this
 // at the result-queue boundary, before every control chunk, tunnel batch and
 // ping. It is not a contiguous-allocation requirement or a reservation.
+// The Passport has no tunnel. After the 17 KB chat buffers, free DMA is
+// about 11 KB, so the 16 KB margin refuses every voice chunk.
+#if CONFIG_MUSE_BOARD_PASSPORT && !CONFIG_HOMEHUB_TUNNEL
+static constexpr size_t NOISE_TX_DMA_RESERVE_BYTES = 6 * 1024;
+#else
 static constexpr size_t NOISE_TX_DMA_RESERVE_BYTES = 16 * 1024;
+#endif
 
 // LARGEST free DMA block is a separate, much smaller allocation floor. C5 AES
 // allocates heap_caps_aligned_calloc(8, n * 2, sizeof(crypto_dma_desc_t), DMA):
@@ -247,9 +253,13 @@ extern "C" void noise_tunnel_on_inbound(const uint8_t *data, size_t len) {
     }
 }
 
+extern "C" bool noise_ctrl_ws_tx_busy(void);
+
 extern "C" int noise_tunnel_pump_tx(const noise_tunnel_emit_t *emit) {
     if (!s_connected.load(std::memory_order_relaxed)
         || !s_work_q || !emit || !emit->send_body) return 0;
+    // A control frame is still in the shared ws buffer. Leave this batch queued.
+    if (noise_ctrl_ws_tx_busy()) return 0;
 
     int sent = 0;
     tx_slot *slot = nullptr;
@@ -257,6 +267,7 @@ extern "C" int noise_tunnel_pump_tx(const noise_tunnel_emit_t *emit) {
     // pressure leaves queued batches intact and lets the session loop service
     // control traffic, RX and keepalives; never sleep or retry a failed seal.
     for (UBaseType_t pending = uxQueueMessagesWaiting(s_work_q); pending > 0; --pending) {
+        if (noise_ctrl_ws_tx_busy()) break;
         size_t dma_free;
         if (!noise_tx_has_dma_headroom(&dma_free)) {
             uint64_t now = esp_timer_get_time();

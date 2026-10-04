@@ -51,7 +51,7 @@ static const char *TAG = "muse_chat_link";
 #define ROW_MAX 12288                   /* maximum subscription line gathered across frames */
 #define TEXT_MAX 1024                   /* reply text kept for the captions */
 #define EV_TEXT 72
-#define SEND_WAIT_MS 200               /* the press queues the pre-roll all at once */
+#define SEND_WAIT_MS 1500              /* the link yields to read while the TCP window is full */
 #define SETTLE_US 3000000               /* quiet after a reply before the turn ends */
 #define REPLY_TIMEOUT_US 60000000
 #define READ_CHARS_PER_S 14             /* caption scroll, about speaking pace */
@@ -99,6 +99,11 @@ static unsigned s_pending_count;
 static uint64_t s_last_seq;
 static bool s_early_evicted, s_skipped_big;
 static char s_note_id[80], s_parent_id[80]; /* ACK IDs shared under s_rx_lock */
+
+/* One note at a time. Permanent buffers, so a turn does not slice the only
+ * large internal block the TLS record needs. */
+static uint8_t s_stage_mem[STAGE_BYTES];
+static char s_chunk_mem[CHUNK_BYTES + 48];
 
 /* Voice task only. */
 static struct {
@@ -409,11 +414,16 @@ static void row_data(rx_t *rx, const uint8_t *data, size_t len, bool end)
     while (len) {
         const uint8_t *newline = memchr(data, '\n', len);
         size_t n = newline ? (size_t)(newline - data) : len;
+        /* A whole line is already in this frame. Parse it there. Copying it
+         * first fails once the reply grows past the free heap (the third note
+         * is the one that does), and the closed subscribe then looks like
+         * LOST CONNECTION. */
+        bool whole = !rx->body && rx->len == 0 && (newline || end);
         if (!rx->overflow) {
-            if (n > ROW_MAX - rx->len) {
-                rx->overflow = s_skipped_big = true;
-            } else if (!rx->body && newline) {
+            if (whole) {
                 if (parse_event((const char *)data, n)) subscription_event();
+            } else if (n > ROW_MAX - rx->len) {
+                rx->overflow = s_skipped_big = true;
             } else if (n) {
                 char *grown = realloc(rx->body, rx->len + n);
                 if (!grown) {
@@ -542,14 +552,23 @@ static void emit(muse_hatch_ev_t type, const char *text)
     xQueueSend(s_events, &ev, 0);
 }
 
+static void release_turn_bufs(void)
+{
+    if (s_turn.stage && s_turn.stage != s_stage_mem) {
+        free(s_turn.stage);
+    }
+    if (s_turn.chunk && s_turn.chunk != s_chunk_mem) {
+        free(s_turn.chunk);
+    }
+    s_turn.stage = NULL;
+    s_turn.chunk = NULL;
+}
+
 static void end_turn(void)
 {
     drop(RX_NOTE);
     drop(RX_SUB);
-    free(s_turn.stage);
-    free(s_turn.chunk);
-    s_turn.stage = NULL;
-    s_turn.chunk = NULL;
+    release_turn_bufs();
     s_turn.phase = T_IDLE;
 }
 
@@ -726,7 +745,8 @@ static void pump(void)
             on_row(&pending);
         }
         if (closed && !s_turn.replied) {
-            subscription_error(status);
+            if (skipped_big) fail("REPLY TOO LONG");
+            else subscription_error(status);
             return;
         }
     }
@@ -810,12 +830,8 @@ void muse_hatch_turn_begin(void)
     end_turn();
     xQueueReset(s_events);
     memset(&s_turn, 0, sizeof(s_turn));
-    s_turn.stage = malloc(STAGE_BYTES);
-    s_turn.chunk = malloc(CHUNK_BYTES + sizeof(MUSE_HATCH_NOTE_TAIL));
-    if (!s_turn.stage || !s_turn.chunk) {
-        fail("OUT OF MEMORY");
-        return;
-    }
+    s_turn.stage = s_stage_mem;
+    s_turn.chunk = s_chunk_mem;
     if (!request(RX_NOTE, "POST", "/chat/stream", true, false)
         || !muse_link_req_send(s_stream[RX_NOTE], MUSE_HATCH_NOTE_HEAD, sizeof(MUSE_HATCH_NOTE_HEAD) - 1, false, SEND_WAIT_MS)) {
         fail("CAN'T REACH MUSE");
@@ -860,10 +876,7 @@ void muse_hatch_turn_end(void)
         fail("CAN'T KEEP UP");
         return;
     }
-    free(s_turn.stage);
-    free(s_turn.chunk);
-    s_turn.stage = NULL;
-    s_turn.chunk = NULL;
+    release_turn_bufs();
     s_turn.t_end = esp_timer_get_time();
     s_turn.phase = T_ACK;
 }

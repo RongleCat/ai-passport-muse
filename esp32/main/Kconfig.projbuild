@@ -304,4 +304,23 @@ menu "ESP32 Device SDK"
             Manufacturing provisions the pairing key in KEY2 before Secure Boot
             locks read protection. No shared software attestation key is used.
 
+    config MUSE_HTTP_PROXY
+        bool "Send Muse HTTPS through an HTTP proxy"
+        default n
+        help
+            Dial an HTTP proxy with CONNECT, then TLS to the real host.
+            Off by default. The Passport build turns it on so the VM
+            HTTPS calls and the Noise session use the LAN proxy.
+
+    config MUSE_HTTP_PROXY_HOST
+        string "HTTP proxy host"
+        depends on MUSE_HTTP_PROXY
+        default "192.168.1.9"
+
+    config MUSE_HTTP_PROXY_PORT
+        int "HTTP proxy port"
+        depends on MUSE_HTTP_PROXY
+        default 7890
+        range 1 65535
+
 endmenu

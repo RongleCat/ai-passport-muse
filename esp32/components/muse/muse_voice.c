@@ -38,6 +38,7 @@
 #include "muse_mem.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#include "muse_ui.h"
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_voice";
@@ -290,7 +291,17 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
     muse_state_set_progress(0);
     s_rec_n = s_sent = 0;
     s_live = s_tried = false;
-    if (!s_rec || (muse_hatch_ready() && !s_held_count)) {
+    bool stream = !s_rec || (muse_hatch_ready() && !s_held_count);
+    muse_state_set_caption(stream ? "LISTENING..." : "RECORDING...");
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* The face timer otherwise waits out its 40 ms period, and go_live()
+     * fills that wait. One short sleep lets the caption reach the panel
+     * first. The pre-roll already holds the start of the utterance, and
+     * this stays inside the 40 ms I2S DMA cushion. */
+    muse_ui_kick();
+    vTaskDelay(pdMS_TO_TICKS(20));
+#endif
+    if (stream) {
         go_live();
     }
     muse_state_set_caption(s_live ? "LISTENING..." : "RECORDING...");
