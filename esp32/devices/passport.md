@@ -173,6 +173,56 @@ free). I2S remains 4 descriptors × 160 frames: 10 ms per buffer and roughly
 - Because pressed-key digital levels are **unverified**, no key is yet proven
   to wake deep sleep. The physical power key is not visible to the MCU.
 
+## Radio-alignment candidates
+
+The shipping overlay keeps light sleep, BLE modem sleep, SPI flash
+auto-suspend, and BLE 5 features. A third-party Passport firmware that uses
+the same Link pairing code leaves those off, and uses larger NimBLE pools.
+Do not change `sdkconfig.muse-passport` to try that. Build a separate image
+in an ignored directory, after the ignored credential file:
+
+```sh
+idf.py -B build-passport-candA -DIDF_TARGET=esp32c3 \
+  -DSDKCONFIG=build-passport-candA/sdkconfig \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-passport;build-passport/sdkconfig.local;build-passport-candA/sdkconfig.local" \
+  build
+```
+
+`build-passport-candA/sdkconfig.local` (gitignored, no secrets) sets these to
+`n`: `SPI_FLASH_AUTO_SUSPEND`, `PM_ENABLE`, `FREERTOS_USE_TICKLESS_IDLE`,
+`BT_CTRL_MODEM_SLEEP`, `BT_CTRL_MODEM_SLEEP_MODE_1`,
+`BT_NIMBLE_50_FEATURE_SUPPORT`, and the dependents
+`BT_CTRL_LPCLK_SEL_MAIN_XTAL`, `BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP`,
+`PM_PROFILING`, `PM_LIGHT_SLEEP_CALLBACKS`, `PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP`,
+`USJ_NO_AUTO_LS_ON_CONNECTION`, `BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY`,
+`BT_NIMBLE_LL_CFG_FEAT_LE_CODED_PHY`. Confirm each one in the generated
+`sdkconfig`. A line whose dependency is already unmet is dropped silently;
+the symbol must still be unset, not left at the `y` from this overlay.
+
+Candidate B repeats those lines and then sets MSYS 12/12, host stack 4096,
+GATT procedures 4, ATT prepare entries 64, max bonds 3, and NimBLE log INFO.
+Leave ACL-from-LL and the HCI event count at 8. IDF 6.0.1 does not keep 12
+and 15. `BT_CTRL_RUN_IN_FLASH_ONLY` stays on in both candidates. Neither file
+changes the BLE name, `node_id`, or NVS.
+
+With `CONFIG_PM_ENABLE` off, `display_pause` still stops and resumes LVGL, and
+`wait_buttons` still returns when the ADC key changes, so a button can still
+wake the screen. The input task also still treats "screen dark on battery, no
+USB host" as the low-power flag, so Wi-Fi nap can still start after two
+minutes. What does not happen is `esp_pm_configure`: the CPU stays at
+160 MHz and does not light-sleep, on battery as well as on USB. USB was
+already full speed, because the host connection blocks light sleep. The log
+line `low power: display paused` does not mean the chip slept. Deep-sleep
+power-off still uses `esp_sleep` GPIO wake and does not depend on
+`CONFIG_PM_ENABLE`. That wake path remains unverified on hardware. Screen-off
+current will be higher than the shipping image. An NVS write during pairing
+can stall the flash-resident controller for the whole erase, because
+auto-suspend is off.
+
+Do not flash these with `idf.py flash`. The four esptool segments are the same
+offsets as the shipping image: bootloader `0x0`, partition table `0x10000`,
+OTA data `0x1d000`, application `0x20000`.
+
 ## Troubleshooting
 
 - **The console disappears:** Passport can sleep and its native USB device can

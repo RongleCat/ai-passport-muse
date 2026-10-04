@@ -149,11 +149,20 @@ CONFIG_SPI_FLASH_AUTO_SUSPEND=y
 CONFIG_I2S_ISR_IRAM_SAFE=y
 
 # Light sleep, from sdkconfig.muse-aipi, in its own block so it can be turned
-# off without touching the memory settings above. On for the first build:
-# display_pause / wait_buttons expect PM to be linked. The C3 has no 32 kHz
-# crystal, so the BLE sleep clock is the main crystal, kept powered.
-# To disable: set PM_ENABLE and FREERTOS_USE_TICKLESS_IDLE to n and delete
-# the BT_CTRL / USJ lines (they depend on those two).
+# off without touching the memory settings above. On for the shipping image:
+# muse_input calls esp_pm_configure when the screen is dark on battery. The C3
+# has no 32 kHz crystal, so the BLE sleep clock is the main crystal, kept powered.
+# To disable, in a later ignored sdkconfig (see devices/passport.md,
+# "Radio-alignment candidates"): set PM_ENABLE and FREERTOS_USE_TICKLESS_IDLE
+# to n, and set these dependents to n as well:
+#   BT_CTRL_MODEM_SLEEP, BT_CTRL_MODEM_SLEEP_MODE_1,
+#   BT_CTRL_LPCLK_SEL_MAIN_XTAL, BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP,
+#   PM_PROFILING, PM_LIGHT_SLEEP_CALLBACKS, USJ_NO_AUTO_LS_ON_CONNECTION.
+# Once the parents are n, Kconfig drops the dependents (a =n line whose
+# dependency is unmet is omitted, and the =y above does not stay). Confirm
+# the generated sdkconfig has none of them set to y.
+# That candidate also turns off SPI_FLASH_AUTO_SUSPEND and
+# BT_NIMBLE_50_FEATURE_SUPPORT. This file keeps all of them on.
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 CONFIG_BT_CTRL_MODEM_SLEEP=y
