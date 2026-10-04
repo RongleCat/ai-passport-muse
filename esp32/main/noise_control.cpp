@@ -29,9 +29,7 @@
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
 #include "sdkconfig.h"
-#if CONFIG_MUSE_HTTP_PROXY
 #include "http_proxy.h"
-#endif
 #include "esp_random.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -2067,7 +2065,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
     // 1. TLS connect
     esp_tls_t *tls = nullptr;
     int r = -1;
-#if CONFIG_MUSE_HTTP_PROXY
+#if MUSE_HTTP_PROXY_ENABLE
     if (muse_tls_connect_proxy(s_noise_host, NOISE_PORT, 15000, &tls) == ESP_OK) {
         r = 1;
     }

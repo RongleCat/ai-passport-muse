@@ -1,5 +1,5 @@
 /*
- * HTTP CONNECT to CONFIG_MUSE_HTTP_PROXY_HOST, then TLS to the real host.
+ * HTTP CONNECT to MUSE_HTTP_PROXY_HOST, then TLS to the real host.
  *
  * esp_tls_conn_new_sync only dials a socket in ESP_TLS_INIT, and that is also
  * the only place it sets is_tls. Skipping INIT (sockfd already connected,
@@ -7,11 +7,9 @@
  * closes the fd once. mbedtls cleanup does not close it. Socket timeouts
  * are set here because the usual tcp_connect path is skipped.
  */
-#include "sdkconfig.h"
-
-#if CONFIG_MUSE_HTTP_PROXY
-
 #include "http_proxy.h"
+
+#if MUSE_HTTP_PROXY_ENABLE
 
 #include <ctype.h>
 #include <errno.h>
@@ -64,7 +62,7 @@ static int set_timeouts(int fd, int timeout_ms)
 static int proxy_tcp_connect(int timeout_ms)
 {
     struct in_addr addr;
-    if (inet_pton(AF_INET, CONFIG_MUSE_HTTP_PROXY_HOST, &addr) != 1) {
+    if (inet_pton(AF_INET, MUSE_HTTP_PROXY_HOST, &addr) != 1) {
         ESP_LOGE(TAG, "proxy host is not an IPv4 address");
         return -1;
     }
@@ -80,7 +78,7 @@ static int proxy_tcp_connect(int timeout_ms)
     }
     struct sockaddr_in sa = {
         .sin_family = AF_INET,
-        .sin_port = htons(CONFIG_MUSE_HTTP_PROXY_PORT),
+        .sin_port = htons(MUSE_HTTP_PROXY_PORT),
         .sin_addr = addr,
     };
     int rc = connect(fd, (struct sockaddr *)&sa, sizeof(sa));
@@ -161,7 +159,7 @@ esp_err_t muse_tls_connect_proxy(const char *host, int port, int timeout_ms, esp
     if (timeout_ms <= 0) timeout_ms = 15000;
 
     ESP_LOGI(TAG, "HTTPS via proxy %s:%d -> %s:%d",
-             CONFIG_MUSE_HTTP_PROXY_HOST, CONFIG_MUSE_HTTP_PROXY_PORT, host, port);
+             MUSE_HTTP_PROXY_HOST, MUSE_HTTP_PROXY_PORT, host, port);
 
     int fd = proxy_tcp_connect(timeout_ms);
     if (fd < 0) return ESP_FAIL;
@@ -714,4 +712,4 @@ int muse_https_exchange(const char *url, const char *method, const char *auth,
 
 typedef int muse_http_proxy_disabled;
 
-#endif /* CONFIG_MUSE_HTTP_PROXY */
+#endif /* MUSE_HTTP_PROXY_ENABLE */

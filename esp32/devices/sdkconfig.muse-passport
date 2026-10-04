@@ -109,11 +109,9 @@ CONFIG_LWIP_MAX_UDP_PCBS=6
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
 CONFIG_MAIN_TASK_STACK_SIZE=12288
 
-# This LAN's router cannot reach the Muse VM. CONNECT through the Mac's
-# FlClash mixed port; the Mac must stay at this address with FlClash running.
-CONFIG_MUSE_HTTP_PROXY=y
-CONFIG_MUSE_HTTP_PROXY_HOST="192.168.1.9"
-CONFIG_MUSE_HTTP_PROXY_PORT=7890
+# LAN proxy is not a board default. Set MUSE_HTTP_PROXY_HOST (IPv4) and
+# MUSE_HTTP_PROXY_PORT when building if this network has no transparent
+# proxy. Leave the host unset behind a soft-router transparent proxy.
 
 # One phone at a time. Half the NimBLE pools, from the C6 and Cardputer
 # overlays, gives the pairing TLS handshake back about 9 KB.

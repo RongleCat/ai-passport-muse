@@ -26,9 +26,7 @@
 #include "esp_log.h"
 #include "cJSON.h"
 #include "sdkconfig.h"
-#if CONFIG_MUSE_HTTP_PROXY
 #include "http_proxy.h"
-#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -129,7 +127,7 @@ static char *str_dup(const cJSON *item) {
 static int http_json(const char *url, esp_http_client_method_t method,
                      const char *auth_header, const char *body,
                      resp_buf_t *resp, int *status_out) {
-#if CONFIG_MUSE_HTTP_PROXY
+#if MUSE_HTTP_PROXY_ENABLE
     if (!url || !resp || !status_out) return VM_API_ERR_FAILED;
     *resp = (resp_buf_t){ .auth_header = auth_header };
     *status_out = 0;

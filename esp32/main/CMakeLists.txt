@@ -108,3 +108,30 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "../avatar"
     REQUIRES ${GADGET_REQUIRES}
 )
+
+# MUSE_HTTP_PROXY_HOST / MUSE_HTTP_PROXY_PORT are read at build time.
+# The stamp is always touched so a later build sees a changed environment.
+# The header itself is rewritten only when the address or port changes.
+set(MUSE_PROXY_ENV_H "${CMAKE_BINARY_DIR}/generated/muse_http_proxy_env.h")
+set(MUSE_PROXY_ENV_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/../cmake/write_proxy_env.cmake")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
+execute_process(
+    COMMAND ${CMAKE_COMMAND} -DOUT_FILE=${MUSE_PROXY_ENV_H} -P ${MUSE_PROXY_ENV_SCRIPT}
+    RESULT_VARIABLE muse_proxy_env_rc
+)
+if(NOT muse_proxy_env_rc EQUAL 0)
+    message(FATAL_ERROR "failed to read MUSE_HTTP_PROXY_HOST")
+endif()
+add_custom_command(
+    OUTPUT "${MUSE_PROXY_ENV_H}.stamp"
+    COMMAND ${CMAKE_COMMAND} -DOUT_FILE=${MUSE_PROXY_ENV_H} -P ${MUSE_PROXY_ENV_SCRIPT}
+    COMMAND ${CMAKE_COMMAND} -E touch "${MUSE_PROXY_ENV_H}.stamp"
+    DEPENDS "${MUSE_PROXY_ENV_SCRIPT}"
+    COMMENT "Applying MUSE_HTTP_PROXY_HOST"
+    VERBATIM
+)
+add_custom_target(muse_http_proxy_env DEPENDS "${MUSE_PROXY_ENV_H}.stamp")
+add_dependencies(${COMPONENT_LIB} muse_http_proxy_env)
+target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_BINARY_DIR}/generated")
+set_source_files_properties(http_proxy.c vm_api.c noise_control.cpp
+    PROPERTIES OBJECT_DEPENDS "${MUSE_PROXY_ENV_H}")

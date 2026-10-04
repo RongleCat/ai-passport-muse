@@ -48,6 +48,42 @@ prefixed with "MuseGadget".
 Each directory has a `README.md` to get started and an `AGENTS.md` for coding
 agents like [Muse Code](https://developer.meta.com/ai/lp/muse-code/).
 
+## 局域网代理
+
+Passport 要在局域网里连上 Muse，编译前用环境变量决定走不走代理。不要把地址写进仓库，也不要在变量里放账号、密码或 SDK token。
+
+1. 局域网里已经有软路由做透明代理。设备直接用软路由出去，不需要再配代理。不要设置 `MUSE_HTTP_PROXY_HOST`。固件会直连，流量由软路由转发。
+2. 没有透明代理。在局域网里找一台已经开着代理、并允许其他设备使用的机器（例如打开了 Allow LAN 的 Clash），编译时写上它的 IPv4 地址和端口：
+
+```sh
+export MUSE_HTTP_PROXY_HOST=192.168.1.10
+export MUSE_HTTP_PROXY_PORT=7890
+```
+
+端口可以不写，默认是 7890。固件先向这台机器发 HTTP CONNECT，再开始 TLS。代理只看得到目标主机名，看不到请求正文。再次编译时不设置 `MUSE_HTTP_PROXY_HOST`，得到的就是直连固件。
+
+## LAN proxy
+
+Set these in the environment before building. They are not stored in the
+repository. Do not put a username, password, or SDK token in them.
+
+1. The LAN already has a transparent proxy, such as a soft router. Do not set
+   `MUSE_HTTP_PROXY_HOST`. The firmware connects directly and the router
+   forwards the traffic.
+2. There is no transparent proxy. Choose a machine on the LAN that is running
+   a proxy and allows other devices to use it, then build with its IPv4
+   address and port:
+
+```sh
+export MUSE_HTTP_PROXY_HOST=192.168.1.10
+export MUSE_HTTP_PROXY_PORT=7890
+```
+
+If the port is omitted it defaults to 7890. The firmware sends HTTP CONNECT
+to that machine, then starts TLS. The proxy sees the destination name, not
+the request body. Build again with `MUSE_HTTP_PROXY_HOST` unset to produce
+the direct-connection firmware.
+
 ## Community
 
 Meet other hackers who are building and customizing Muse gadgets in our

@@ -1,13 +1,14 @@
 /*
  * Optional HTTP CONNECT proxy for the Passport's HTTPS calls.
- * Enabled only when CONFIG_MUSE_HTTP_PROXY is set. The proxy sees the
- * hostname (CONNECT) and then a TLS handshake; it does not see the HTTP body.
+ * Enabled when the build environment sets MUSE_HTTP_PROXY_HOST. The proxy
+ * sees the hostname (CONNECT) and then a TLS handshake; it does not see
+ * the HTTP body.
  */
 #pragma once
 
-#include "sdkconfig.h"
+#include "muse_http_proxy_env.h"
 
-#if CONFIG_MUSE_HTTP_PROXY
+#if MUSE_HTTP_PROXY_ENABLE
 
 #include "esp_err.h"
 #include "esp_tls.h"
@@ -33,4 +34,4 @@ int muse_https_exchange(const char *url, const char *method, const char *auth,
 }
 #endif
 
-#endif /* CONFIG_MUSE_HTTP_PROXY */
+#endif /* MUSE_HTTP_PROXY_ENABLE */

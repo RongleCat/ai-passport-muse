@@ -39,6 +39,11 @@ ESP32-C3 board.
 Use ESP-IDF v6.0.1. Keep credentials in the ignored build configuration; do
 not add an SDK token, Wi-Fi SSID, or password to an overlay or commit.
 
+The LAN proxy is the `MUSE_HTTP_PROXY_HOST` and `MUSE_HTTP_PROXY_PORT`
+environment variables, read at build time. Leave the host unset when a soft
+router already transparent-proxies the LAN. Otherwise set the IPv4 address
+and port of a proxy machine on the LAN. See the repository README.
+
 ```sh
 . ~/esp/esp-idf-v6/export.sh
 cd esp32
