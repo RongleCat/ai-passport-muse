@@ -83,6 +83,11 @@ if(CONFIG_MUSE_ENABLED)
         list(APPEND srcs "boards/board_m5stack_stopwatch.c" "boards/muse_lcd_bands.c")
     elseif(CONFIG_MUSE_BOARD_M5STACK_CORES3)
         list(APPEND srcs "boards/board_m5stack_cores3.c")
+    elseif(CONFIG_MUSE_BOARD_PASSPORT)
+        list(APPEND srcs "boards/board_passport.c" "boards/passport_keys.c" "boards/passport_cw2017.c")
+    endif()
+    if(CONFIG_MUSE_CJK_FONT)
+        list(APPEND srcs "fonts/muse_font_cjk_14.c")
     endif()
 elseif(CONFIG_HOMEHUB_VOICE)
     # The Voice PE board uses just the Hatch voice session; the project's main/
@@ -98,6 +103,13 @@ set(muse_priv_requires
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
     esp_driver_pcnt)
 list(APPEND muse_priv_requires camera)
+
+if(CONFIG_MUSE_CJK_FONT)
+    # The generated file includes "lvgl.h" only when this is set. The other
+    # branch looks for lvgl/lvgl.h relative to an upstream tree layout.
+    set_source_files_properties("fonts/muse_font_cjk_14.c"
+        PROPERTIES COMPILE_DEFINITIONS "LV_LVGL_H_INCLUDE_SIMPLE")
+endif()
 
 idf_component_register(
     SRCS ${srcs}

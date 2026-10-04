@@ -61,6 +61,9 @@ static void refresh(void) {}
 static void open_menu(void) { s_view = VIEW_LIST; s_sel = 0; }
 static void muse_menu_close(void) { s_view = VIEW_CLOSED; }
 static void show(view_t v) { s_view = v; }
+static void open_last(void) { s_view = VIEW_LAST; }
+static void step_status(int dir) { (void)dir; }
+static void step_kept(int dir) { (void)dir; }
 static void activate(int item, int dir) { activated = item; direction = dir; }
 static void muse_input_request_power_off(void) { ++power_count; }
 static void muse_link_reset_setup(void) { ++reset_count; }
@@ -112,7 +115,17 @@ static void menu_test(void) {
     s_view = VIEW_POWER; handle(MUSE_MENU_SELECT); assert(power_count == 1);
     s_view = VIEW_RESET; handle(MUSE_MENU_SELECT); assert(reset_count == 1);
     s_view = VIEW_STATUS; handle(MUSE_MENU_BACK); assert(s_view == VIEW_LIST);
+    s_view = VIEW_STATUS; handle(MUSE_MENU_DOWN); assert(s_view == VIEW_STATUS);
+    s_view = VIEW_STATUS; handle(MUSE_MENU_UP); assert(s_view == VIEW_STATUS);
+    s_view = VIEW_STATUS; handle(MUSE_MENU_SELECT); assert(s_view == VIEW_LIST);
     s_view = VIEW_BATTERY; handle(MUSE_MENU_BACK); assert(s_view == VIEW_LIST);
+    s_view = VIEW_BATTERY; handle(MUSE_MENU_DOWN); assert(s_view == VIEW_LIST);
+    s_view = VIEW_CLOSED; handle(MUSE_MENU_LAST); assert(s_view == VIEW_LAST);
+    s_view = VIEW_LAST; handle(MUSE_MENU_DOWN); assert(s_view == VIEW_LAST);
+    s_view = VIEW_LAST; handle(MUSE_MENU_UP); assert(s_view == VIEW_LAST);
+    s_view = VIEW_LAST; handle(MUSE_MENU_SELECT); assert(s_view == VIEW_CLOSED);
+    s_view = VIEW_CLOSED; handle(MUSE_MENU_UP); assert(s_view == VIEW_LIST);
+    s_view = VIEW_CLOSED; handle(MUSE_MENU_DOWN); assert(s_view == VIEW_LIST);
 }
 static void values_test(void) {
     const int steps[] = {10,25,50,75,100};

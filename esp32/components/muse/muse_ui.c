@@ -22,6 +22,8 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "sdkconfig.h"
+#include "muse_ui_text.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -45,6 +47,9 @@
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
+#endif
+#if CONFIG_MUSE_CJK_FONT
+LV_FONT_DECLARE(muse_font_cjk_14)
 #endif
 
 static const char *TAG = "muse_ui";
@@ -86,6 +91,7 @@ static const char *TAG = "muse_ui";
 static int s_w, s_h;
 static bool s_small;
 static bool s_tall;         /* compact, with room above and below Muse (StickS3) */
+static bool s_passport_compact;
 static int s_canvas_px;     /* Muse's size on screen */
 static int s_dy;            /* full layout: offset from a 466 px tall screen */
 static lv_indev_t *s_indev;
@@ -113,6 +119,7 @@ static lv_obj_t *s_meter[METER_SEGS];
 static lv_obj_t *s_speaker;
 static lv_obj_t *s_speaker_icon;
 static lv_obj_t *s_aux_icon;
+static lv_obj_t *s_prev_icon;   /* passport: previous reply, beside the down key */
 static lv_obj_t *s_image;   /* display.draw_url, over the face */
 #if CONFIG_MUSE_WATCHER_CAMERA
 static lv_obj_t *s_camera_hint;
@@ -125,11 +132,12 @@ static uint16_t *s_image_buf;
 static lv_area_t s_image_area;
 static bool s_image_dirty;
 static bool s_ready;
+static lv_timer_t *s_frame_timer;
 
 static float s_level;
 static int s_shown_state = -1;
 static const char *s_shown_name;
-static const char *s_idle_name = "READY";   /* idle's label: set by the Wi-Fi state */
+static const char *s_idle_name = MUSE_UI_T("READY", "就绪");   /* idle's label: set by the Wi-Fi state */
 static int s_shown_lit = -1;
 static uint32_t s_shown_accent;
 static bool s_meter_visible = true;
@@ -143,6 +151,7 @@ static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
+static muse_mode_t s_posed_mode = MUSE_MODE_COUNT;
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -154,7 +163,7 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[4];       /* what it covers */
+    lv_obj_t *hides[6];       /* labels plus the button icons a reply covers */
 } answer_layout_t;
 
 enum { ANSWER_HEARD, ANSWER_READ };
@@ -174,6 +183,103 @@ static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
     [MUSE_MODE_ERROR] = "ERROR",
     [MUSE_MODE_OFF] = "GOODBYE",
 };
+
+/* Shown on the state line. The English names stay in MODE_NAMES. */
+static const char *mode_label(muse_mode_t mode)
+{
+#if MUSE_UI_ZH
+    static const char *const zh[MUSE_MODE_COUNT] = {
+        [MUSE_MODE_BOOT] = "正在启动",
+        [MUSE_MODE_IDLE] = "就绪",
+        [MUSE_MODE_LISTENING] = "正在听",
+        [MUSE_MODE_THINKING] = "思考中",
+        [MUSE_MODE_SPEAKING] = "正在说",
+        [MUSE_MODE_ERROR] = "出错",
+        [MUSE_MODE_OFF] = "再见",
+    };
+    if ((unsigned)mode < MUSE_MODE_COUNT && zh[mode]) {
+        return zh[mode];
+    }
+#endif
+    return MODE_NAMES[mode];
+}
+
+/* System captions only. Reply text and live transcripts pass through. */
+static const char *caption_shown(const char *s)
+{
+#if !MUSE_UI_ZH
+    return s;
+#else
+    static const struct {
+        const char *en;
+        const char *zh;
+    } map[] = {
+        { "LISTENING...", "正在听..." },
+        { "RECORDING...", "录音..." },
+        { "SENDING VOICE NOTE", "正在发送语音" },
+        { "NOTE SENT - WAITING FOR MUSE", "已发送，等待 Muse" },
+        { "SENDING SAVED NOTE", "正在发送已存语音" },
+        { "SAVED NOTE SENT", "已存语音已发送" },
+        { "AUDIO INIT FAILED", "音频初始化失败" },
+        { "SET UP MUSE FIRST", "请先设置 Muse" },
+        { "NO WI-FI", "无 Wi-Fi" },
+        { "CAN'T REACH MUSE", "无法连接 Muse" },
+        { "LOST CONNECTION TO MUSE", "与 Muse 失去连接" },
+        { "MUSE DIDN'T TAKE IT", "Muse 没有收到" },
+        { "REPLY TOO LONG", "回复太长" },
+        { "NO REPLY FROM MUSE", "Muse 没有回复" },
+        { "REPLY BUFFER LIMIT - TRY AGAIN", "回复太长，请再试" },
+        { "CAN'T KEEP UP", "来不及接收" },
+        { "CAN'T SUBSCRIBE TO MUSE", "无法订阅 Muse" },
+        { "MUSE REPLY ACCESS DENIED (403)", "Muse 拒绝访问 (403)" },
+        { "MUSE REPLY AUTH REQUIRED (401)", "Muse 需要登录 (401)" },
+        { "WAKING UP...", "正在启动..." },
+        { "GOODBYE!", "再见" },
+        { "RELEASE TO POWER OFF", "松开即可关机" },
+        { "COULDN'T POWER OFF", "无法关机" },
+        { "HOLD TO POWER OFF", "按住关机" },
+        { "PHONE SETUP ON", "手机设置 开" },
+        { "PHONE SETUP OFF", "手机设置 关" },
+        { "SPEAKER OFF", "扬声器已关" },
+        { "SPEAKER ON", "扬声器已开" },
+        { "HOLD TO MUTE", "按住静音" },
+        { "HOLD TO UNMUTE", "按住开声音" },
+        { "RESETTING...", "正在重置..." },
+    };
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        if (strcmp(s, map[i].en) == 0) {
+            return map[i].zh;
+        }
+    }
+    static char buf[MUSE_CAPTION_MAX];
+    const char *prefix = NULL;
+    const char *rest = NULL;
+    if (strncmp(s, "LISTENING ", 10) == 0) {
+        prefix = "正在听 ";
+        rest = s + 10;
+    } else if (strncmp(s, "RECORDING ", 10) == 0) {
+        prefix = "录音 ";
+        rest = s + 10;
+    } else if (strncmp(s, "PHONE SETUP: ", 13) == 0) {
+        prefix = "手机设置 ";
+        rest = s + 13;
+    } else if (strncmp(s, "MUSE REPLY ERROR ", 17) == 0) {
+        prefix = "Muse 回复出错 ";
+        rest = strchr(s, '(');
+        if (!rest) {
+            rest = "";
+        }
+    }
+    if (!prefix) {
+        return s;
+    }
+    size_t n = strlcpy(buf, prefix, sizeof(buf));
+    if (n < sizeof(buf)) {
+        strlcpy(buf + n, rest, sizeof(buf) - n);
+    }
+    return buf;
+#endif
+}
 
 /*
  * Muse reaches LVGL as an image whose pixels are made on demand: a decoder
@@ -434,6 +540,24 @@ static void build_button_icons(lv_obj_t *face)
     s_aux_icon = make_label(face, s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28, COLOR_DIM);
     lv_label_set_text(s_aux_icon, muse_board->touch ? LV_SYMBOL_POWER : LV_SYMBOL_LIST);
     lv_obj_align(s_aux_icon, a->align, a->x, a->y);
+
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Outer edge of each icon, not its centre. 5% of 240x320 is 12px and 16px.
+     * Menu-bar words keep talk_hint and aux_hint. */
+    int right = muse_board->width * 5 / 100;
+    int vert = muse_board->height * 5 / 100;
+    if (right < 8) {
+        right = 8;
+    }
+    if (vert < 8) {
+        vert = 8;
+    }
+    lv_obj_align(s_aux_icon, LV_ALIGN_TOP_RIGHT, -right, vert);
+    lv_obj_align(s_mic_icon, LV_ALIGN_BOTTOM_RIGHT, -right, -vert);
+    s_prev_icon = make_label(face, s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28, COLOR_DIM);
+    lv_label_set_text(s_prev_icon, LV_SYMBOL_PREV);
+    lv_obj_align(s_prev_icon, LV_ALIGN_TOP_RIGHT, -right, muse_board->height * 45 / 100);
+#endif
 }
 
 static void on_canvas_clicked(lv_event_t *e)
@@ -637,8 +761,9 @@ static void add_hides(answer_layout_t *l, int n)
         .x1 = s_w / 2 - l->w / 2, .y1 = s_h / 2 + l->top,
         .x2 = s_w / 2 + l->w / 2 - 1, .y2 = s_h / 2 + l->top + l->h - 1,
     };
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon };
-    for (size_t i = 0; i < 2; i++) {
+    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, s_prev_icon };
+    const size_t cap = sizeof(l->hides) / sizeof(l->hides[0]);
+    for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]) && (size_t)n < cap; i++) {
         if (!hints[i]) {
             continue;   /* no aux icon on this board */
         }
@@ -665,7 +790,11 @@ static void build_answer(lv_obj_t *face, int ring_in)
         int d = ring_in - spk_r - 4;   /* just inside the ring, even when swollen */
         spk_x = -(int)sqrtf((float)(d * d - spk_y * spk_y));
     }
+#if CONFIG_MUSE_CJK_FONT
+    const lv_font_t *font = &muse_font_cjk_14;
+#else
     const lv_font_t *font = &lv_font_unscii_16;
+#endif
     int cw = lv_font_get_glyph_width(font, 'M', ' ');
     int pitch = lv_font_get_line_height(font) + CAPTION_LINE_SPACE;
 
@@ -846,17 +975,58 @@ static void build_screen(void)
     lv_obj_set_size(status, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(status, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Left edge matches the menu icon's right inset. Same centre line. */
+    int edge = muse_board->width * 5 / 100;
+    int menu_top = muse_board->height * 5 / 100;
+    if (edge < 8) {
+        edge = 8;
+    }
+    if (menu_top < 8) {
+        menu_top = 8;
+    }
+    const lv_font_t *icon_font = s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28;
+    int icon_h = lv_font_get_line_height(icon_font);
+    int row_h = lv_font_get_line_height(&lv_font_montserrat_14);
+    lv_obj_set_style_pad_column(status, 4, 0);
+    lv_obj_align(status, LV_ALIGN_TOP_LEFT, edge, menu_top + (icon_h - row_h) / 2);
+#else
     lv_obj_set_style_pad_column(status, s_small ? 4 : 8, 0);
     lv_obj_align(status, LV_ALIGN_TOP_MID, 0, s_small ? 1 : 20 + s_dy);
+#endif
     s_wifi_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
     s_ble_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Same face as the Wi-Fi icon, so the percent shares the menu icon's line. */
+    s_power_lbl = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
+#else
     s_power_lbl = make_label(status, &lv_font_unscii_8, COLOR_DIM);
+#endif
 
     /* The compact layout leaves the state to the avatar and the caption,
      * unless the screen is tall enough to fit it in small type above Muse. */
+#if MUSE_UI_ZH
+    s_state_lbl = make_label(face, &muse_font_cjk_14, 0xffffff);
+    lv_obj_set_style_text_letter_space(s_state_lbl, 0, 0);
+#else
     s_state_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, 0xffffff);
     lv_obj_set_style_text_letter_space(s_state_lbl, s_small ? 1 : 2, 0);
+#endif
     lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 22 : 40 + s_dy);
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Stay centred, on the menu icon's line. */
+    {
+        int menu_top = muse_board->height * 5 / 100;
+        if (menu_top < 8) {
+            menu_top = 8;
+        }
+        const lv_font_t *icon_font = s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28;
+        int icon_h = lv_font_get_line_height(icon_font);
+        const lv_font_t *state_font = lv_obj_get_style_text_font(s_state_lbl, 0);
+        int state_h = lv_font_get_line_height(state_font);
+        lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, menu_top + (icon_h - state_h) / 2);
+    }
+#endif
     lv_obj_set_flag(s_state_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
     /* This gadget's own name, dim under the state while it's unpaired: with
@@ -865,22 +1035,43 @@ static void build_screen(void)
      * screen too narrow for the whole thing, and empties it once paired. */
     s_name_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, COLOR_DIM);
     lv_obj_align(s_name_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 32 : 60 + s_dy);
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Under the centred state, clear of that line. */
+    {
+        int menu_top = muse_board->height * 5 / 100;
+        if (menu_top < 8) {
+            menu_top = 8;
+        }
+        const lv_font_t *icon_font = s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28;
+        lv_obj_align(s_name_lbl, LV_ALIGN_TOP_MID, 0, menu_top + lv_font_get_line_height(icon_font) + 6);
+    }
+#endif
     /* Same rule as the state label: a square 128 px screen centres Muse over
      * these rows, so there's nowhere to put this without covering the face. */
     lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
+#if CONFIG_MUSE_CJK_FONT
+    s_caption_lbl = make_label(face, &muse_font_cjk_14, COLOR_CAPTION);
+#else
     s_caption_lbl = make_label(face, font_pick(&lv_font_unscii_16, &lv_font_unscii_8), COLOR_CAPTION);
+#endif
     if (s_small) {
         /* Two lines over the bottom of the face, on a dark band so they stay
          * legible. A tall screen has room to keep them above the mic icon. */
+#if CONFIG_MUSE_CJK_FONT
+        int caption_px = lv_font_get_line_height(&muse_font_cjk_14);
+        lv_obj_set_size(s_caption_lbl, s_w, 2 * caption_px + 2 + 4);
+#else
         lv_obj_set_size(s_caption_lbl, s_w, 2 * 8 + 2 + 4);
+#endif
         lv_obj_set_style_pad_ver(s_caption_lbl, 2, 0);
         lv_obj_set_style_text_line_space(s_caption_lbl, 2, 0);
         lv_obj_set_style_bg_color(s_caption_lbl, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_caption_lbl, LV_OPA_70, 0);
         lv_label_set_long_mode(s_caption_lbl, LV_LABEL_LONG_MODE_DOTS);
         /* Touch screens need the caption above the navigation dots too. */
-        lv_obj_align(s_caption_lbl, LV_ALIGN_BOTTOM_MID, 0, (s_tall || s_tv) ? -30 : -3);
+        int caption_bottom = s_tall ? (s_passport_compact ? -38 : -30) : (s_tv ? -30 : -3);
+        lv_obj_align(s_caption_lbl, LV_ALIGN_BOTTOM_MID, 0, caption_bottom);
 
         s_bar = lv_obj_create(face);
         lv_obj_remove_style_all(s_bar);
@@ -1047,12 +1238,25 @@ static void build_overlays(void)
     lv_obj_set_style_border_width(s_pair, 2, 0);
     lv_obj_remove_flag(s_pair, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_pair, LV_OBJ_FLAG_HIDDEN);
-    s_pair_title = make_label(s_pair, font_pick(&lv_font_montserrat_20, FONT_COMPACT), COLOR_LIT);
-    lv_label_set_text(s_pair_title, "Pairing code");
+    s_pair_title = make_label(s_pair,
+#if MUSE_UI_ZH
+                              &muse_font_cjk_14,
+#else
+                              font_pick(&lv_font_montserrat_20, FONT_COMPACT),
+#endif
+                              COLOR_LIT);
+    lv_label_set_text(s_pair_title, MUSE_UI_T("Pairing code", "配对码"));
+    /* Digits and the OK key name stay on Montserrat so the code stays large. */
     s_pair_code = make_label(s_pair, font_pick(&lv_font_montserrat_28, &lv_font_montserrat_20), COLOR_ACCENT);
     lv_obj_set_style_text_letter_space(s_pair_code, s_small ? 2 : 6, 0);
-    s_pair_hint = make_label(s_pair, font_pick(&lv_font_montserrat_14, FONT_COMPACT), COLOR_DIM);
-    lv_label_set_text(s_pair_hint, s_small ? "Enter on phone" : "Enter it on your phone");
+    s_pair_hint = make_label(s_pair,
+#if MUSE_UI_ZH
+                             &muse_font_cjk_14,
+#else
+                             font_pick(&lv_font_montserrat_14, FONT_COMPACT),
+#endif
+                             COLOR_DIM);
+    lv_label_set_text(s_pair_hint, MUSE_UI_T(s_small ? "Enter on phone" : "Enter it on your phone", "在手机上输入"));
     /* Wraps: "bottom right button" is wider than the AIPI's card. */
     lv_obj_set_width(s_pair_hint, lv_pct(100));
     lv_label_set_long_mode(s_pair_hint, LV_LABEL_LONG_MODE_WRAP);
@@ -1129,15 +1333,15 @@ static const char *idle_name(muse_wifi_state_t wifi)
     switch (wifi) {
     case MUSE_WIFI_CONNECTED:
         joined = true;
-        return MODE_NAMES[MUSE_MODE_IDLE];
+        return mode_label(MUSE_MODE_IDLE);
     case MUSE_WIFI_OFF:
-        return "WI-FI OFF";
+        return MUSE_UI_T("WI-FI OFF", "Wi-Fi 已关");
     case MUSE_WIFI_NO_NETWORK:
-        return "SET UP WI-FI";
+        return MUSE_UI_T("SET UP WI-FI", "请设置 Wi-Fi");
     case MUSE_WIFI_NOT_NEARBY:
-        return "NO WI-FI";   /* none of the saved networks is in range */
+        return MUSE_UI_T("NO WI-FI", "无 Wi-Fi");   /* none of the saved networks is in range */
     default:
-        return joined ? "RECONNECTING" : "CONNECTING";
+        return joined ? MUSE_UI_T("RECONNECTING", "正在重连") : MUSE_UI_T("CONNECTING", "正在连接");
     }
 }
 
@@ -1210,14 +1414,27 @@ static void update_chrome(float now)
     bool confirm = !b.passkey && muse_link_state() == MUSE_LINK_CONFIRM;
     if (b.passkey || confirm) {
         char code[24], hint[40];
+        const char *title;
         if (confirm) {
+#if MUSE_UI_ZH
+            strlcpy(code, muse_board->talk_button, sizeof(code));
+            strlcpy(hint, "按下这个键确认", sizeof(hint));
+            title = "与 Muse 应用配对";
+#else
             strlcpy(code, s_small ? "Press" : "Press button", sizeof(code));
             snprintf(hint, sizeof(hint), s_small ? "%s button" : "Press the %s button", muse_board->talk_button);
+            title = s_small ? "Muse app" : "Pair with Muse app";
+#endif
         } else {
             snprintf(code, sizeof(code), "%06lu", (unsigned long)b.passkey);
+#if MUSE_UI_ZH
+            strlcpy(hint, "在手机上输入", sizeof(hint));
+            title = "配对码";
+#else
             strlcpy(hint, s_small ? "Enter on phone" : "Enter it on your phone", sizeof(hint));
+            title = "Pairing code";
+#endif
         }
-        const char *title = confirm ? (s_small ? "Muse app" : "Pair with Muse app") : "Pairing code";
         if (strcmp(code, lv_label_get_text(s_pair_code)) != 0) {
             lv_label_set_text(s_pair_code, code);
             lv_label_set_text(s_pair_title, title);
@@ -1278,6 +1495,14 @@ static void update_power(float now)
 
     muse_power_t p = muse_state_power();
     char buf[32];
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Percent only, so the corner clears the centred state word. */
+    if (p.battery_pct < 0) {
+        strlcpy(buf, p.usb ? "USB" : "", sizeof(buf));
+    } else {
+        snprintf(buf, sizeof(buf), "%s%d%%", p.charging ? "+" : "", p.battery_pct);
+    }
+#else
     if (p.battery_pct < 0) {
         strlcpy(buf, p.usb ? (s_small ? "USB" : "USB POWER") : "", sizeof(buf));
     } else if (s_small) {
@@ -1287,6 +1512,7 @@ static void update_power(float now)
     } else {
         snprintf(buf, sizeof(buf), "BATTERY %d%%", p.battery_pct);
     }
+#endif
     if (strcmp(buf, lv_label_get_text(s_power_lbl)) != 0) {
         lv_label_set_text(s_power_lbl, buf);
     }
@@ -1295,7 +1521,7 @@ static void update_power(float now)
 static void update_status(muse_mode_t mode, float now)
 {
     uint32_t accent = muse_pixel_accent(mode);
-    const char *name = mode == MUSE_MODE_IDLE ? s_idle_name : MODE_NAMES[mode];
+    const char *name = mode == MUSE_MODE_IDLE ? s_idle_name : mode_label(mode);
 
     if (name != s_shown_name) {
         lv_label_set_text(s_state_lbl, name);
@@ -1383,7 +1609,7 @@ static void update_status(muse_mode_t mode, float now)
     }
     if (fresh) {
         lv_obj_t *lbl = answer >= 0 ? s_reply_lbl : s_caption_lbl;
-        lv_label_set_text(lbl, caption);
+        lv_label_set_text(lbl, caption_shown(caption));
         lv_obj_set_flag(lbl, LV_OBJ_FLAG_HIDDEN, !caption[0]);
         if (s_reply_lbl) {
             lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -1462,6 +1688,17 @@ static void frame_tick(lv_timer_t *timer)
     if (s_image_dsc.data) {
         return;   /* the image covers the face */
     }
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Pairing already has the chrome above. Skip the pixel face so the draw
+     * thread does not allocate while the handshake and the Wi-Fi scan run.
+     * The menu timer still ran. */
+    {
+        muse_link_state_t link = muse_link_state();
+        if (link == MUSE_LINK_PAIRING || link == MUSE_LINK_CONFIRM) {
+            return;
+        }
+    }
+#endif
     if (s_tv && lv_obj_get_scroll_x(s_tv) != 0) {
         /* Off screen, or sliding to or from settings: hold still so the
          * slide gets the whole frame time. */
@@ -1472,15 +1709,29 @@ static void frame_tick(lv_timer_t *timer)
     float level = muse_state_level();
     s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
 
-    muse_pose_t pose = {
-        .mode = mode,
-        .t = now,
-        .mode_t = mode_t,
-        .level = s_level,
-        .happy = muse_state_happiness(),
-    };
-    muse_pixel_render(&pose);
-    invalidate_muse();
+    /* One core. A 192 px pose every frame keeps the note queue from draining.
+     * Listening skips the pose for the whole hold. Thinking and speaking draw
+     * it once, then keep the caption and the bottom bar moving. */
+#if CONFIG_MUSE_BOARD_PASSPORT
+    bool reply = mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING;
+    bool draw_pose = mode != MUSE_MODE_LISTENING && !(reply && mode == s_posed_mode);
+    if (draw_pose) {
+        s_posed_mode = mode;
+    }
+#else
+    bool draw_pose = true;
+#endif
+    if (draw_pose) {
+        muse_pose_t pose = {
+            .mode = mode,
+            .t = now,
+            .mode_t = mode_t,
+            .level = s_level,
+            .happy = muse_state_happiness(),
+        };
+        muse_pixel_render(&pose);
+        invalidate_muse();
+    }
 
     update_status(mode, now);
 }
@@ -1492,7 +1743,8 @@ esp_err_t muse_ui_start(void)
     /* The full layout assumes room for the 466 px board's header and bottom
      * captions. Short landscape panels (BOX-3) need the compact layout too. */
     bool short_landscape = s_w > s_h && s_h < 320;
-    s_small = s_h < 200 || s_w < 200 || short_landscape;
+    s_passport_compact = !muse_board->round && s_w == 240 && s_h == 320;
+    s_small = s_h < 200 || s_w < 200 || short_landscape || s_passport_compact;
     s_tall = s_small && s_h >= s_w + 64;
     /* Small screens keep room for the status line and button icons. A narrow
      * one is as wide as Muse gets, in whole pixels. */
@@ -1528,12 +1780,21 @@ esp_err_t muse_ui_start(void)
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
-    lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
+    s_frame_timer = lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;
     muse_board->display_unlock();
 
     ESP_LOGI(TAG, "UI up: %dx%d, %d px Muse, %d ms frames", s_w, s_h, s_canvas_px, muse_board->frame_ms);
     return ESP_OK;
+}
+
+void muse_ui_kick(void)
+{
+    if (!s_ready || !s_frame_timer || !muse_board->display_lock(40)) {
+        return;
+    }
+    lv_timer_ready(s_frame_timer);
+    muse_board->display_unlock();
 }
 
 void muse_ui_show_face(void)

@@ -41,6 +41,7 @@
 #include "esp_efuse.h"
 
 #include "lwip/ip4_addr.h"
+#include "esp_wifi.h"
 
 #include "identity.h"
 #include "config_store.h"
@@ -2065,6 +2066,16 @@ static void on_client_disconnected(void) {
 }
 
 static void start_ble_setup_server_if_needed(void) {
+#if CONFIG_MUSE_PASSPORT_SKIP_BLE
+    // Measurement build: leave the ~61 KB BLE stack unallocated. Advertising
+    // calls no-op while the server is not started.
+    if (!s_ble_started) {
+        ESP_LOGW(TAG, "PASSPORT_SKIP_BLE: BLE stack not started");
+        heap_snapshot("ble skipped");
+        s_ble_started = true;
+    }
+    return;
+#endif
     if (s_ble_started) return;
 
     ble_callbacks_t cb = {
@@ -2436,6 +2447,7 @@ static void ota_verify_task(void *arg) {
 static void heap_snapshot(const char *label) {
     size_t free_int = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t largest_int = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    size_t min_int = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     size_t free_dma = heap_caps_get_free_size(MALLOC_CAP_DMA);
     size_t largest_dma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -2444,6 +2456,29 @@ static void heap_snapshot(const char *label) {
              (unsigned)(free_int / 1024), (unsigned)(largest_int / 1024),
              (unsigned)(free_dma / 1024), (unsigned)(largest_dma / 1024),
              (unsigned)(free_psram / 1024));
+    // Byte line is Passport-only. Other boards keep the KiB line above.
+#if CONFIG_MUSE_PASSPORT_HEAP_LOG
+    ESP_LOGI(TAG, "HEAP %-20s bytes free=%u min=%u largest=%u",
+             label, (unsigned)free_int, (unsigned)min_int, (unsigned)largest_int);
+#else
+    (void)min_int;
+#endif
+}
+
+static void log_wifi_link(const char *ssid) {
+    esp_netif_ip_info_t ip = {0};
+    esp_netif_t *netif = wifi_mgr_get_netif();
+    wifi_ap_record_t ap = {0};
+    bool have_ip = netif && esp_netif_get_ip_info(netif, &ip) == ESP_OK;
+    bool have_rssi = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+    if (have_ip) {
+        ESP_LOGI(TAG, "wifi joined ssid=%s ip=" IPSTR " rssi=%d",
+                 ssid ? ssid : "?", IP2STR(&ip.ip), have_rssi ? (int)ap.rssi : 0);
+    } else {
+        ESP_LOGI(TAG, "wifi joined ssid=%s ip=? rssi=%d",
+                 ssid ? ssid : "?", have_rssi ? (int)ap.rssi : 0);
+    }
+    heap_snapshot("after wifi join");
 }
 
 // ---- Entry point -----------------------------------------------------------
@@ -2690,6 +2725,7 @@ void app_run(void) {
             ui_set_wifi(joined);
             ui_set_status("wifi_connected");
             led_status_set_state(LED_STATE_WIFI_CONNECTED);
+            log_wifi_link(joined);
             if (!ovr_ssid[0]) {
                 persist_connected_wifi_channel();
             }

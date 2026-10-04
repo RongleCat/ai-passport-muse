@@ -62,6 +62,13 @@ before adding a feature to one.
 | M5Stack StopWatch | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stopwatch` | manual |
 | M5Stack CoreS3 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-cores3` | `tools/muse/board.sh build cores3` |
 | M5Stack StickC Plus2 | `esp32` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stickc-plus2` | manual |
+| FoloToy AI Passport | `esp32c3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-passport` | `tools/muse/board.sh build passport` |
+
+Passport is an 8 MB ESP32-C3 board without PSRAM. Its full UI uses CJK
+captions and text replies, but does not support the home-network tunnel,
+pushed images, or spoken replies. See [`devices/passport.md`](devices/passport.md)
+before changing it; it records the validated memory budget, direct esptool
+flash workaround for ESP-IDF v6.0.1, and the still-unverified sleep paths.
 
 The default profile expects the C5 DevKitC-1: an addressable status LED on
 GPIO27, the BOOT button on GPIO28 (active low), 8 MB flash and quad PSRAM.
@@ -352,10 +359,12 @@ The default avatar is in `avatar/`: its renderer (`muse_pixel.c`) and
 its animation (`jollybot.gif`, and `happy_anim.c/.h` made from it by
 `tools/gen_happy_anim.py`).
 
-Third-party code keeps its upstream license and header: `minimp3.h` (CC0) and
-`main/pixel_font.c` (BSD-2-Clause, Adafruit). Don't restyle them or replace
-their headers with the Apache one; `components/minimp3/README.md` says how to
-update minimp3.
+Third-party code keeps its upstream license and header: `minimp3.h` (CC0),
+`main/pixel_font.c` (BSD-2-Clause, Adafruit), and the Passport caption font
+in `components/muse/fonts/` (SIL OFL 1.1, bitmaps derived from Noto Sans SC).
+Don't restyle them or replace their headers with the Apache one.
+`components/minimp3/README.md` says how to update minimp3.
+`components/muse/fonts/README.md` says how to regenerate the caption font.
 
 The Apache License doesn't cover the Jollybot avatar in `avatar/`. Its files
 carry only a Meta copyright line; don't add the Apache header to them.

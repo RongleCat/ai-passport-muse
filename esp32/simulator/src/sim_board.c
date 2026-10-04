@@ -20,7 +20,34 @@
 #include "src/drivers/sdl/lv_sdl_mouse.h"
 #include "src/drivers/sdl/lv_sdl_window.h"
 
-#define WATCHER_RESOLUTION 412
+#if defined(MUSE_SIM_BOARD_PASSPORT)
+#define SIM_WIDTH 240
+#define SIM_HEIGHT 320
+#define SIM_NAME "FoloToy AI Passport Simulator"
+#define SIM_TITLE "Muse Gadget Simulator — AI Passport"
+#define SIM_ROUND false
+#define SIM_TOUCH false
+#define SIM_DIAGONAL_IN 2.4f
+#define SIM_TALK_BUTTON "OK"
+#define SIM_AUX_BUTTON "DOWN"
+/* Same insets as board_passport.c. Menu text follows align, not x. */
+#define SIM_TALK_HINT { LV_ALIGN_BOTTOM_RIGHT, -16, -8 }
+#define SIM_AUX_HINT { LV_ALIGN_BOTTOM_LEFT, 16, -8 }
+#define SIM_FRAME_MS 50
+#else
+#define SIM_WIDTH 412
+#define SIM_HEIGHT 412
+#define SIM_NAME "SenseCAP Watcher Simulator"
+#define SIM_TITLE "Muse Gadget Simulator"
+#define SIM_ROUND true
+#define SIM_TOUCH true
+#define SIM_DIAGONAL_IN 1.45f
+#define SIM_TALK_BUTTON "wheel"
+#define SIM_AUX_BUTTON "scroll"
+#define SIM_TALK_HINT { LV_ALIGN_CENTER, 100, -143 }
+#define SIM_AUX_HINT { LV_ALIGN_DEFAULT, 0, 0 }
+#define SIM_FRAME_MS 40
+#endif
 
 static lv_display_t *s_display;
 
@@ -34,16 +61,16 @@ static esp_err_t sim_init(void)
 
 static lv_display_t *sim_display_start(lv_indev_t **touch)
 {
-    s_display = lv_sdl_window_create(WATCHER_RESOLUTION, WATCHER_RESOLUTION);
+    s_display = lv_sdl_window_create(SIM_WIDTH, SIM_HEIGHT);
     if (!s_display) {
         return NULL;
     }
     /* The SDL driver installs SDL_GetTicks. Use the simulator clock instead so
      * scripted runs can advance time without sleeping and render repeatably. */
     lv_tick_set_cb(sim_time_tick_ms);
-    lv_sdl_window_set_title(s_display, "Muse Gadget Simulator");
+    lv_sdl_window_set_title(s_display, SIM_TITLE);
     lv_sdl_window_set_resizeable(s_display, false);
-    if (touch) {
+    if (touch && SIM_TOUCH) {
         *touch = lv_sdl_mouse_create();
     }
     return s_display;
@@ -75,16 +102,17 @@ static esp_err_t sim_power_off(void)
 }
 
 static const muse_board_t s_sim_board = {
-    .name = "SenseCAP Watcher Simulator",
-    .width = WATCHER_RESOLUTION,
-    .height = WATCHER_RESOLUTION,
-    .round = true,
-    .touch = true,
-    .diagonal_in = 1.45f,
-    .talk_button = "wheel",
-    .aux_button = "scroll",
-    .talk_hint = { LV_ALIGN_CENTER, 100, -143 },
-    .frame_ms = 40,
+    .name = SIM_NAME,
+    .width = SIM_WIDTH,
+    .height = SIM_HEIGHT,
+    .round = SIM_ROUND,
+    .touch = SIM_TOUCH,
+    .diagonal_in = SIM_DIAGONAL_IN,
+    .talk_button = SIM_TALK_BUTTON,
+    .aux_button = SIM_AUX_BUTTON,
+    .talk_hint = SIM_TALK_HINT,
+    .aux_hint = SIM_AUX_HINT,
+    .frame_ms = SIM_FRAME_MS,
     .init = sim_init,
     .display_start = sim_display_start,
     .display_lock = sim_display_lock,

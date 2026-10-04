@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "esp_attr.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/task.h"
@@ -98,7 +99,8 @@ static void power_off(void)
     vTaskDelay(pdMS_TO_TICKS(500));
     ESP_LOGE(TAG, "power-off failed (%s)", esp_err_to_name(err));
     muse_state_set_mode(MUSE_MODE_IDLE);
-    muse_state_set_caption("COULDN'T POWER OFF");
+    muse_state_set_caption(err == ESP_ERR_TIMEOUT ? "RELEASE TO POWER OFF"
+                                                   : "COULDN'T POWER OFF");
 }
 
 static void set_asleep(bool asleep, const char *why)
@@ -180,7 +182,22 @@ static void aux_button(bool pressed, bool edge)
     }
 }
 
-/* No touch: the aux button opens the menu and steps down it; any press wakes. */
+/* Pairing owns the screen. Home keys must not open the menu or the last reply. */
+static bool pairing_blocks_nav(void)
+{
+#if CONFIG_MUSE_BOARD_PASSPORT
+    muse_link_state_t link = muse_link_state();
+    return link == MUSE_LINK_PAIRING || link == MUSE_LINK_CONFIRM;
+#else
+    return false;
+#endif
+}
+
+/*
+ * No touch: aux steps down an open menu, and wakes the screen.
+ * On the passport home screen the same short press opens the previous reply.
+ * The press that opens a view is not also a step: the next press steps.
+ */
 static void menu_button(bool pressed, bool edge)
 {
     if (!edge || !pressed) {
@@ -188,10 +205,19 @@ static void menu_button(bool pressed, bool edge)
     }
     if (muse_state_asleep()) {
         set_asleep(false, muse_board->aux_button);
-    } else if (!s_talk_down) {
-        muse_state_poke();
-        muse_menu_key(MUSE_MENU_DOWN);
+        return;
     }
+    if (s_talk_down || pairing_blocks_nav()) {
+        return;
+    }
+    muse_state_poke();
+#if CONFIG_MUSE_BOARD_PASSPORT
+    if (!muse_menu_is_open()) {
+        muse_menu_key(MUSE_MENU_LAST);
+        return;
+    }
+#endif
+    muse_menu_key(MUSE_MENU_DOWN);
 }
 
 static void aux_key(bool pressed, bool edge)
@@ -281,6 +307,9 @@ static void keyboard_buttons(unsigned ev)
     }
     if (muse_state_asleep()) {
         set_asleep(false, "keyboard");
+        return;
+    }
+    if (pairing_blocks_nav()) {
         return;
     }
     muse_state_poke();
@@ -433,6 +462,11 @@ static void input_task(void *arg)
             s_power_off_requested = false;
             power_off();
         }
+#if CONFIG_MUSE_BOARD_PASSPORT
+        /* Brings the mic back if a pair attempt ended while the task was
+         * still exiting. Also the ">park" / ">unpark" bench switch. */
+        muse_voice_service();
+#endif
 
         TickType_t now = xTaskGetTickCount();
         if (now - checked >= pdMS_TO_TICKS(SLEEP_CHECK_MS)) {
@@ -564,12 +598,185 @@ static void set_face(const char *name)
     fflush(stdout);
 }
 
+#if CONFIG_MUSE_BOARD_PASSPORT
+void passport_bench_fit(void);
+void passport_bench_nvs_stress(void);
+void passport_key_levels(void);
+void passport_gauge_log(void);
+void passport_i2s_stats(const char *tag);
+void passport_i2s_stats_reset(void);
+void passport_flush_snap(void);
+
+static void dump_heap(void)
+{
+    printf("@heap free=%u min=%u largest=%u\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    fflush(stdout);
+}
+
+/* uxTaskGetStackHighWaterMark is bytes on this port (StackType_t is uint8_t).
+ * size 0: an IDF task whose configured depth is not in this table. */
+static void dump_stacks(void)
+{
+    static const struct {
+        const char *name;
+        unsigned bytes;
+    } tasks[] = {
+        { "lvgl", 8192 },
+        { "swdraw", 4096 },
+        { "muse_input", 4096 },
+        { "muse_serial", 3584 },
+        { "muse_keep", 3072 },
+        { "muse_voice", 6144 },
+        { "muse_boot", 3072 },
+        { "nimble_host", 3072 },
+        { "main", 6144 },
+        { "tcpip", 0 },
+        { "wifi", 0 },
+        { "sys_evt", 0 },
+        { "esp_timer", 0 },
+        { "ipc0", 0 },
+        { "scan_rfsh", 4096 },
+        { "muse_scan", 4096 },
+        { "pass_heap", 2560 },
+        { "ble_conn", 4096 },
+        { "pair_confirm", 4096 },
+        { "ble_dc", 2048 },
+        { "devinfo", 4096 },
+        { "scan", 4096 },
+        { "pair_fit", 4096 },
+        { "nvs_stress", 4096 },
+    };
+    for (size_t i = 0; i < sizeof(tasks) / sizeof(tasks[0]); i++) {
+        TaskHandle_t task = xTaskGetHandle(tasks[i].name);
+        if (!task) {
+            printf("@stacks %s absent\n", tasks[i].name);
+            continue;
+        }
+        unsigned free_b = (unsigned)(uxTaskGetStackHighWaterMark(task) * sizeof(StackType_t));
+        if (tasks[i].bytes) {
+            printf("@stacks %s free=%u size=%u\n", tasks[i].name, free_b, tasks[i].bytes);
+        } else {
+            printf("@stacks %s free=%u\n", tasks[i].name, free_b);
+        }
+    }
+    fflush(stdout);
+    dump_heap();
+}
+#endif
+
 /*
  * Console-only commands; false for setup commands. Their buffers are taken
  * per command: without PSRAM, static ones would hold internal RAM for good.
  */
 static bool console_command(char *line, bool whole)
 {
+#if CONFIG_MUSE_BOARD_PASSPORT
+    if (!strcmp(line, "stacks")) {
+        dump_stacks();
+        return true;
+    }
+    if (!strcmp(line, "heap")) {
+        dump_heap();
+        return true;
+    }
+    if (!strcmp(line, "park")) {
+        muse_voice_force_hold(true);
+        printf("@park requested\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "unpark")) {
+        muse_voice_force_hold(false);
+        printf("@unpark requested\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "scan")) {
+        esp_err_t err = muse_wifi_scan();
+        printf("@scan %s\n", esp_err_to_name(err));
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "fit")) {
+        passport_bench_fit();
+        return true;
+    }
+    if (!strcmp(line, "nvstest")) {
+        passport_bench_nvs_stress();
+        return true;
+    }
+    if (!strcmp(line, "keylevel")) {
+        passport_key_levels();
+        return true;
+    }
+    if (!strcmp(line, "gauge")) {
+        passport_gauge_log();
+        return true;
+    }
+    if (!strcmp(line, "i2sstat")) {
+        passport_i2s_stats("now");
+        return true;
+    }
+    if (!strcmp(line, "i2sreset")) {
+        passport_i2s_stats_reset();
+        printf("@i2s reset\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "chirp")) {
+        muse_voice_request_chirp();
+        printf("@chirp requested\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "selftest")) {
+        muse_voice_request_selftest();
+        printf("@selftest requested\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "usb")) {
+        muse_power_t p = muse_state_power();
+        printf("@usb jtag=%d power_usb=%d power_charging=%d pct=%d mv=%d\n",
+               muse_console_host() ? 1 : 0, p.usb ? 1 : 0, p.charging ? 1 : 0,
+               p.battery_pct, p.battery_mv);
+        fflush(stdout);
+        return true;
+    }
+    if (!strncmp(line, "caption=", 8)) {
+        muse_state_set_caption("%s", line + 8);
+        printf("@caption set\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "snap")) {
+        passport_flush_snap();
+        return true;
+    }
+#if CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE
+    /* Mirror only. Does not call the pairing-confirm button path. */
+    if (!strncmp(line, "link=", 5)) {
+        const char *name = line + 5;
+        muse_link_state_t st;
+        if (!strcmp(name, "confirm")) {
+            st = MUSE_LINK_CONFIRM;
+        } else if (!strcmp(name, "unpaired")) {
+            st = MUSE_LINK_UNPAIRED;
+        } else {
+            printf("@link bad\n");
+            fflush(stdout);
+            return true;
+        }
+        muse_link_set_state(st);
+        printf("@link %s\n", muse_link_state_name(st));
+        fflush(stdout);
+        return true;
+    }
+#endif
+#endif
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);
@@ -643,7 +850,12 @@ static bool console_command(char *line, bool whole)
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
  * (see set_face), and "chat=" sends a typed message to Hatch (see chat_line
- * and tools/muse/chat.py).
+ * and tools/muse/chat.py). Passport also takes "stacks", "heap", "park",
+ * "unpark", "scan", "fit", "nvstest" (off unless
+ * CONFIG_MUSE_PASSPORT_NVS_STRESS is set), "keylevel", "gauge", "usb",
+ * "i2sstat", "i2sreset", "chirp", "selftest", "caption=", and "snap"
+ * (@snap off unless CONFIG_MUSE_PASSPORT_FLUSH_CAPTURE). That option also
+ * accepts "link=confirm" and "link=unpaired", which only move the UI mirror.
  */
 static void serial_task(void *arg)
 {

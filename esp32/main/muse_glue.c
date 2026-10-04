@@ -38,6 +38,7 @@
 
 #include "muse_ble.h"
 #include "muse_board.h"
+#include "muse_voice.h"
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
@@ -518,14 +519,29 @@ static void keeper_task(void *arg) {
         }
 
         bool have = s_ssid[0] != '\0';
+        /* Menuconfig override is not a saved network. app.c joins it; an
+         * empty Muse list would otherwise drop that association. An empty
+         * override (every board's default) does not take this branch. */
+        bool dev_override = !have && CONFIG_HOMEHUB_WIFI_SSID[0] != '\0';
         napped = napped && s_nap;
-        if (!muse_settings_wifi_on() || !have) {
+        if (!muse_settings_wifi_on() || (!have && !dev_override)) {
             if (wifi_mgr_is_connected()) {
                 ESP_LOGI(TAG, "wifi %s; disconnecting", have ? "off" : "forgotten");
                 wifi_mgr_disconnect();
             }
             joined_gen = s_creds_gen;
             s_away = false;
+        } else if (dev_override) {
+            if (!wifi_mgr_is_connected()) {
+                wifi_mgr_connect(CONFIG_HOMEHUB_WIFI_SSID, CONFIG_HOMEHUB_WIFI_PASSWORD,
+                                 CONNECT_TIMEOUT_MS);
+            }
+            if (wifi_mgr_is_connected()) {
+                joined_gen = s_creds_gen;
+                backoff = RETRY_MIN_US;
+                away_backoff = AWAY_MIN_US;
+                s_away = false;
+            }
         } else if (s_nap) {
             // Once per nap, even if Wi-Fi had already dropped: it stops
             // wifi_mgr's and Link's retries too. Retried each pass while
@@ -627,8 +643,20 @@ void muse_glue_start(void) {
     ble_server_set_companion(&companion);
     // Pinned to the UI core, so the display's SPI interrupt, set up in it,
     // lands beside the task that sends to the display (muse_lcd_bands.h).
-    if (xTaskCreatePinnedToCore(boot_task, "muse_boot", 8192, NULL, 5, NULL, MUSE_UI_CORE) != pdPASS
-        || xTaskCreate(keeper_task, "muse_keep", 6144, NULL, 4, &s_keeper) != pdPASS) {
+    /* Passport high-water on the first boot was ~1.4 KB of the 8 KB boot
+     * stack and ~1.3 KB of the keeper stack in the first few seconds.
+     * Other boards keep the original sizes. */
+#if CONFIG_MUSE_BOARD_PASSPORT
+    const uint32_t boot_stack = 3072;
+    /* Peak use measured at 1560 bytes. The spare 1 KB stays in the free
+     * block a second voice turn shares with its TLS record. */
+    const uint32_t keep_stack = 3072;
+#else
+    const uint32_t boot_stack = 8192;
+    const uint32_t keep_stack = 6144;
+#endif
+    if (xTaskCreatePinnedToCore(boot_task, "muse_boot", boot_stack, NULL, 5, NULL, MUSE_UI_CORE) != pdPASS
+        || xTaskCreate(keeper_task, "muse_keep", keep_stack, NULL, 4, &s_keeper) != pdPASS) {
         ESP_LOGE(TAG, "failed to start Muse tasks");
     }
 }
@@ -676,7 +704,25 @@ void muse_glue_led_state(led_state_t state) {
             st = MUSE_LINK_ERROR;
             break;
     }
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Provisioning reports Wi-Fi and auth through the same LED hook, including
+     * the confirmed-session scan that previously drove the heap to ~10 KB.
+     * Those updates must not drop PAIRING/CONFIRM, or the mic comes back in
+     * the middle of that scan. Advertising, unpaired, and error still clear it. */
+    {
+        muse_link_state_t prev = muse_link_state();
+        if ((prev == MUSE_LINK_PAIRING || prev == MUSE_LINK_CONFIRM) &&
+            (st == MUSE_LINK_CONNECTING || st == MUSE_LINK_ONLINE ||
+             st == MUSE_LINK_OFFLINE)) {
+            st = prev;
+        }
+    }
+#endif
     muse_link_set_state(st);
+#if CONFIG_MUSE_BOARD_PASSPORT
+    /* Park the mic as soon as the app connects, before the handshake allocs. */
+    muse_voice_service();
+#endif
     // Pairing, provisioning and unpair all move the LED; pick up their config.
     keeper_kick(KEEP_RELOAD);
 }

@@ -16,6 +16,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -60,21 +61,36 @@ static void on_setting(muse_setting_t what)
 
 const muse_board_t *muse_board;
 
+static void heap_stage(const char *label)
+{
+#if CONFIG_MUSE_PASSPORT_HEAP_LOG
+    ESP_LOGI(TAG, "HEAP %-22s free=%u min=%u largest=%u", label,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+#else
+    (void)label;
+#endif
+}
+
 void muse_app_run(const muse_board_t *board)
 {
     muse_board = board;
     ESP_LOGI(TAG, "board: %s", board->name);
     ESP_ERROR_CHECK(board->init());
+    heap_stage("after board init");
     ESP_ERROR_CHECK(muse_settings_init());
     muse_settings_set_listener(on_setting);
     muse_state_init();
     muse_battery_init();
     muse_state_set_caption("WAKING UP...");
     ESP_ERROR_CHECK(muse_ui_start());
+    heap_stage("after lvgl ui");
     ESP_LOGI(TAG, "UI built: free internal %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
     QueueHandle_t q = xQueueCreate(16, sizeof(muse_input_event_t));
     ESP_ERROR_CHECK(muse_input_start(q));
+    heap_stage("after input");
 
     /* Let the boot animation (flame ignites, eyes open) play out. */
     vTaskDelay(pdMS_TO_TICKS(1400));
@@ -84,6 +100,7 @@ void muse_app_run(const muse_board_t *board)
         muse_state_set_mode(MUSE_MODE_IDLE);
         muse_state_set_caption("%s", "");   /* the button icons say how to talk */
     }
+    heap_stage("after audio");
 
     muse_hatch_start();
     /* Home Link owns the radios; these just hand it the saved settings. */

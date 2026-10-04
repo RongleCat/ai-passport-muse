@@ -1,0 +1,245 @@
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+# FoloToy AI Passport
+
+This is the full Muse UI port for FoloToy AI Passport: an ESP32-C3 with 8 MB
+flash and no PSRAM. The board-specific source of truth is the local
+`ai-passport` checkout's `components/bsp/include/bsp_pins.h`; its hardware
+guide documents the vendor power sequence. Do not infer pins from another
+ESP32-C3 board.
+
+## Hardware facts
+
+| Signal | GPIO / setting | Notes |
+|---|---|---|
+| Key ladder | GPIO0, ADC1_CH0 | External 10 kΩ pull-up; no internal pull-up; 12 dB attenuation. Windows: UP `[0,150)`, DOWN `[150,447)`, OK `[447,1900)` mV. Recorded ladder values: UP 0 mV, DOWN 293 mV, OK 591 mV, released 2965 mV. Pressed-key digital levels are **unverified**. |
+| LCD | CS 1, DC 20, SCLK 8, MOSI 9 | ST7789P3, 240×320, SPI2 mode 0, no MISO or reset pin. It needs inversion on. The 30 px rounded corners are masked during LVGL flush without an extra framebuffer. |
+| Backlight | GPIO21 | LEDC, 5 kHz, 10 bit. |
+| I2S / ES8311 | MCLK 6, BCLK 5, WS 3, DOUT 2, DIN 4 | MCU master, 16 kHz / 16 bit / two physical slots, MCLK multiple 256. Microphone uses the left slot and 30 dB gain. |
+| I2C | SDA 10, SCL 7 | I2C0 at 100 kHz; ES8311 0x18 and CW2017 0x63 share one bus. |
+| Battery | CW2017 | 520 mAh profile; voltage is the 14-bit raw value × 312.5 µV. No VBUS or charging GPIO, so firmware reports `usb=false` and `charging=false`. |
+| USB console | GPIO18 / GPIO19 | Native USB Serial/JTAG. Do not move the console to UART0: GPIO21 is the backlight. |
+
+## Build and flash
+
+The repository README is the full guide. Short form, using ESP-IDF v6.0.1
+and the `esp32c3` tools:
+
+Put the SDK token in gitignored `build-passport/sdkconfig.local`. Do not add
+a token, Wi-Fi SSID, password, or proxy address to a tracked overlay. Set
+`MUSE_HTTP_PROXY_HOST` to an IPv4 address only when the LAN has no
+transparent proxy. The variables are read on every build.
+
+```sh
+. ~/esp/esp-idf-v6/export.sh
+cd esp32
+idf.py -B build-passport -DIDF_TARGET=esp32c3 \
+  -DSDKCONFIG=build-passport/sdkconfig \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-passport;build-passport/sdkconfig.local" \
+  build
+```
+
+Do not build this directory with `tools/muse/board.sh`; that script deletes
+`managed_components`. Do not use `idf.py flash`: ESP-IDF 6.0.1 splits
+`SERIAL_TOOL`. Flash the generated arguments directly, with every button
+released. Do not pass `--erase-all`.
+
+```sh
+cd esp32/build-passport
+python -m esptool --chip esp32c3 -p <PORT> -b 460800 \
+  --before default-reset --after hard-reset write-flash @flash_args
+```
+
+The generated file supplies bootloader at `0x0`, partition table at `0x10000`,
+OTA data at `0x1d000`, and the application at `0x20000`. Check for `Hash of
+data verified` for every segment. A normal reflash leaves NVS pairing, Wi-Fi,
+and screen settings in place. To recover factory firmware, use a known
+backup without changing its layout:
+
+```sh
+python -m esptool --chip esp32c3 -p <PORT> write-flash 0x0 <factory-backup.bin>
+```
+
+## Controls and features
+
+- **OK** confirms a pairing request and is push-to-talk. **DOWN** opens and
+  moves down the menu; **UP** moves up. Reset pairing only through menu
+  **Reset pairing**; there is no five-second reset gesture.
+- Button hints use the lower corners: OK is `LV_ALIGN_BOTTOM_RIGHT` at
+  (−16, −8) and DOWN is `LV_ALIGN_BOTTOM_LEFT` at (16, −8). Menu words follow
+  `align` only, so the old shared `BOTTOM_MID` drew both strings on one
+  anchor. The 16 px inset and y=−8 keep that ink inside the 30 px corner
+  mask. The same anchors place the home-screen icons, below the caption box
+  (its bottom is about y=282). A single CJK caption line's ink is y=245–257.
+- `CONFIG_MUSE_CJK_FONT=y` is enabled for this board. The font accepts Chinese
+  captions such as `你好 Muse，中英混排 OK`; visual glyph quality, rounded corners,
+  color, and tearing are **unverified by human inspection**.
+- No PSRAM means no home-network tunnel, pushed images, or spoken replies.
+  Replies are rendered as text captions. This is a memory limitation, not a
+  performance or battery-life claim.
+
+## Measured memory budget
+
+All figures are internal heap bytes from hardware logs; `min` is historical
+minimum and `largest` is the largest free block. They are measurement points,
+not a promise for an untested session.
+
+| Firmware/checkpoint | `min` / `largest` | Result |
+|---|---:|---|
+| T6, unpaired, BLE advertising and Wi-Fi joined | 32396 / 27648 | Booted and remained stable; menu had not been fixed yet. |
+| T8, after 21 menu open/close cycles | 26536 / 22528 | No menu stack-protection panic. |
+| T9, unpaired with BLE, Wi-Fi, UI, and idle audio | 28240 / 22528 | Pairing decrypt fit test passed; real phone pairing was not rerun. |
+| T10 final CJK image, after boot | 28840 / 22528 | Above the 24 KiB minimum and 16 KiB largest-block review thresholds. |
+| T14, unpaired boot, BLE advertising, Wi-Fi joined, audio on | 27872 / 22528 | Still above those review thresholds. One boot. The GAP log did not change NimBLE pool sizes. |
+| T10 probe/sleep-wake history | 27120 / 22528 | Still above those review thresholds. |
+| T10 NVS stress measurement | 19992 / — | 200 commits completed; this intentional stress minimum is not the normal-session budget. |
+
+The final T10 application was `0x2a1000` in a `0x3e0000` app partition (32%
+free). I2S remains 4 descriptors × 160 frames: 10 ms per buffer and roughly
+40 ms queued. Larger 6×240 DMA depth did not fit the 24 KiB review budget.
+
+## Debugging
+
+- `MUSE_PASSPORT_HEAP_LOG` defaults to enabled and reports heap state every
+  five seconds. Keep it on until a real paired TLS/WebSocket session is
+  measured.
+- `MUSE_PASSPORT_SKIP_BLE` defaults to disabled. Enabling it prevents normal
+  BLE pairing.
+- `MUSE_PASSPORT_NVS_STRESS` defaults to disabled. With it disabled, `>nvstest`
+  reports `@nvstest off`; only enable it in an ignored local configuration.
+- `MUSE_PASSPORT_FLUSH_CAPTURE` defaults to disabled. `>snap` is always
+  recognized. With the option off it prints `@snap off` and the pixel dump is
+  not in the binary. Enable it only in the ignored `build-passport/sdkconfig.local`
+  for a measurement build. `>snap` invalidates the active screen and the top
+  layer, then on `LV_EVENT_FLUSH_FINISH` (after the rounded mask and after
+  `esp_lv_adapter`'s `lv_draw_sw_rgb565_swap`) prints each partial buffer as
+  `@px x1 y1 x2 y2 <base64>` and finishes with `@snap done`. Coordinates are
+  inclusive. The base64 is packed big-endian RGB565, high byte first: the
+  bytes `esp_lcd_panel_draw_bitmap` receives. `LV_COLOR_16_SWAP` is not set,
+  so that swap happens once. Pixel value 0 stays 0. Panel `INVON` is not
+  undone. The capture allocates no frame buffer; base64 is encoded in
+  240-character stack chunks and written with `usb_serial_jtag_write_bytes`
+  (a full TX ring blocks and yields). The task waits one tick between strips.
+  If internal free memory is below 12 KiB, or the historical minimum falls
+  below 12 KiB during the capture, it prints `@snap abort heap` and stops.
+  The host tool is `tools/muse/passport_snap.py`. While the option is on,
+  `>link=confirm` and `>link=unpaired` set only the Muse link mirror used by
+  the pairing card. They do not complete pairing, and they are compiled out
+  with the capture.
+- Console commands include `>heap`, `>keylevel`, `>i2sstat`, `>i2sreset`,
+  `>caption=<text>`, `>chirp`, `>selftest`, `>gauge`, `>usb`, `>power`, and
+  `>snap`.
+  `>keylevel` temporarily switches GPIO0 from ADC to a digital input and then
+  restores ADC; do not treat `gpio_during_adc` as a wake-level result.
+- Key logs are rate-limited to about 300 ms; a later line can include
+  `(+N suppressed)`.
+- Link GAP lines use the same 300 ms collapse for an identical line.
+  `gap CONNECT`, `gap SUBSCRIBE` (`reason=write|term|restore`),
+  `gap ENC_CHANGE`, `gap CONN_UPDATE`, `gap DISCONNECT`, and a failed
+  `gap NOTIFY_TX` are `ESP_LOGI` on the default image. NimBLE's own host
+  log stays at WARNING. `bonds sync|connect our= peer= cccd=` counts
+  stored NimBLE bonds. `TX sent N chunks` means every notification in
+  that reply was accepted by the host; `notify skipped`, `notify mbuf
+  failed`, `notify rc=`, or `TX aborted` means it was not. `TX chunked`
+  is printed before the send and does not by itself mean the phone got
+  the bytes.
+
+## Known limits and unverified checks
+
+- Full phone pairing, the paired TLS/WebSocket heap, and repeated
+  push-to-talk sessions are **unverified** on the final image.
+- The menu path was hardware-tested. T12 captured the pixels handed to the
+  panel, including CJK glyph bitmaps, layout, and the rounded-corner mask.
+  Those frames showed the menu and Reset pairing hints stacked on one anchor.
+  T13 moved the hints to the lower corners and captured the panel pixels
+  again. The two strings are separate, and a single-line CJK caption still
+  lands at y=245–257.
+  Human inspection of the glass — panel INVON colors, the physical bezel,
+  tearing, and backlight brightness — is **unverified**.
+- Screen pause/resume was tested while USB was connected; USB held a
+  no-light-sleep lock, so actual battery-powered light sleep is **unverified**.
+- Deep sleep from menu Power off and long-press DOWN is **unverified**. Before
+  shutdown, firmware waits up to 8 s for the ADC key to release; after it
+  converts GPIO0 to a no-pull digital input, it waits up to 2 s for a high
+  level. It restarts rather than arms low-level wake if GPIO0 remains low.
+- Because pressed-key digital levels are **unverified**, no key is yet proven
+  to wake deep sleep. The physical power key is not visible to the MCU.
+
+## Radio-alignment candidates
+
+The shipping overlay keeps light sleep, BLE modem sleep, SPI flash
+auto-suspend, and BLE 5 features. A third-party Passport firmware that uses
+the same Link pairing code leaves those off, and uses larger NimBLE pools.
+Do not change `sdkconfig.muse-passport` to try that. Build a separate image
+in an ignored directory, after the ignored credential file:
+
+```sh
+idf.py -B build-passport-candA -DIDF_TARGET=esp32c3 \
+  -DSDKCONFIG=build-passport-candA/sdkconfig \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-passport;build-passport/sdkconfig.local;build-passport-candA/sdkconfig.local" \
+  build
+```
+
+`build-passport-candA/sdkconfig.local` (gitignored, no secrets) sets these to
+`n`: `SPI_FLASH_AUTO_SUSPEND`, `PM_ENABLE`, `FREERTOS_USE_TICKLESS_IDLE`,
+`BT_CTRL_MODEM_SLEEP`, `BT_CTRL_MODEM_SLEEP_MODE_1`,
+`BT_NIMBLE_50_FEATURE_SUPPORT`, and the dependents
+`BT_CTRL_LPCLK_SEL_MAIN_XTAL`, `BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP`,
+`PM_PROFILING`, `PM_LIGHT_SLEEP_CALLBACKS`, `PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP`,
+`USJ_NO_AUTO_LS_ON_CONNECTION`, `BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY`,
+`BT_NIMBLE_LL_CFG_FEAT_LE_CODED_PHY`. Confirm each one in the generated
+`sdkconfig`. A line whose dependency is already unmet is dropped silently;
+the symbol must still be unset, not left at the `y` from this overlay.
+
+Candidate B repeats those lines and then sets MSYS 12/12, host stack 4096,
+GATT procedures 4, ATT prepare entries 64, max bonds 3, and NimBLE log INFO.
+Leave ACL-from-LL and the HCI event count at 8. IDF 6.0.1 does not keep 12
+and 15. `BT_CTRL_RUN_IN_FLASH_ONLY` stays on in both candidates. Neither file
+changes the BLE name, `node_id`, or NVS.
+
+With `CONFIG_PM_ENABLE` off, `display_pause` still stops and resumes LVGL, and
+`wait_buttons` still returns when the ADC key changes, so a button can still
+wake the screen. The input task also still treats "screen dark on battery, no
+USB host" as the low-power flag, so Wi-Fi nap can still start after two
+minutes. What does not happen is `esp_pm_configure`: the CPU stays at
+160 MHz and does not light-sleep, on battery as well as on USB. USB was
+already full speed, because the host connection blocks light sleep. The log
+line `low power: display paused` does not mean the chip slept. Deep-sleep
+power-off still uses `esp_sleep` GPIO wake and does not depend on
+`CONFIG_PM_ENABLE`. That wake path remains unverified on hardware. Screen-off
+current will be higher than the shipping image. An NVS write during pairing
+can stall the flash-resident controller for the whole erase, because
+auto-suspend is off.
+
+Do not flash these with `idf.py flash`. The four esptool segments are the same
+offsets as the shipping image: bootloader `0x0`, partition table `0x10000`,
+OTA data `0x1d000`, application `0x20000`.
+
+## Troubleshooting
+
+- **The console disappears:** Passport can sleep and its native USB device can
+  disconnect. Re-open the port after it re-enumerates; do not assume a fixed
+  device path.
+- **Boot loop or no flash connection:** enter download mode with the board's
+  BOOT/RESET procedure, flash all generated segments rather than only the app,
+  then check the boot log for a panic. Avoid changing `build-passport` while
+  another operator is using it.
+- **Power off returns or immediately wakes:** inspect `>keylevel` and the
+  key logs. The firmware must report `GPIO0 high ... arming low wake`; a
+  `GPIO0 still low ... not arming wake` message deliberately restarts instead.
+- **Need the stock image back:** use the factory `write-flash 0x0` command
+  above. Keep the backup outside version control and do not erase or edit it.

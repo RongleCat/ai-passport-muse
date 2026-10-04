@@ -19,10 +19,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_app_desc.h"
+
+#include "muse_battery.h"
 #include "muse_console.h"
+#include "muse_input.h"
 #include "muse_menu.h"
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
+#include "muse_voice.h"
 
 #define SIM_DEFAULT_NAME "MuseGadget-SIM001"
 #define SIM_DEFAULT_SSID "Muse Simulator"
@@ -42,8 +47,13 @@ static muse_hatch_status_t s_chat = {
     .state = MUSE_HATCH_REACHABLE,
 };
 static muse_link_state_t s_link = MUSE_LINK_ONLINE;
-static int s_brightness = 75;
+static int s_brightness = 100;
+static int s_volume = 70;
+static int s_mic_gain = 30;
+static int s_sleep_s = 120;
 static bool s_speaker = true;
+static bool s_wifi_on = true;
+static bool s_ble_on = false;
 
 static void copy_text(char *out, size_t cap, const char *text)
 {
@@ -78,8 +88,13 @@ void sim_services_reset(void)
         .state = MUSE_HATCH_REACHABLE,
     };
     s_link = MUSE_LINK_ONLINE;
-    s_brightness = 75;
+    s_brightness = 100;
+    s_volume = 70;
+    s_mic_gain = 30;
+    s_sleep_s = 120;
     s_speaker = true;
+    s_wifi_on = true;
+    s_ble_on = false;
 }
 
 void sim_services_set_wifi(muse_wifi_state_t state, const char *ssid)
@@ -204,31 +219,128 @@ bool muse_settings_ui_in_subpage(void)
     return false;
 }
 
-void muse_menu_key(muse_menu_key_t key)
+int muse_settings_volume(void)
 {
-    (void)key;
+    return s_volume;
 }
 
-bool muse_menu_is_open(void)
+void muse_settings_set_volume(int pct)
 {
+    if (pct < 0) {
+        pct = 0;
+    } else if (pct > 100) {
+        pct = 100;
+    }
+    s_volume = pct;
+}
+
+int muse_settings_mic_gain(void)
+{
+    return s_mic_gain;
+}
+
+void muse_settings_set_mic_gain(int db)
+{
+    if (db < 0) {
+        db = 0;
+    } else if (db > 36) {
+        db = 36;
+    }
+    s_mic_gain = db;
+}
+
+int muse_settings_sleep_s(void)
+{
+    return s_sleep_s;
+}
+
+void muse_settings_set_sleep_s(int secs)
+{
+    s_sleep_s = secs < 0 ? 0 : secs;
+}
+
+bool muse_settings_wifi_on(void)
+{
+    return s_wifi_on;
+}
+
+void muse_settings_set_wifi_on(bool on)
+{
+    s_wifi_on = on;
+}
+
+bool muse_settings_ble_on(void)
+{
+    return s_ble_on;
+}
+
+void muse_settings_set_ble_on(bool on)
+{
+    s_ble_on = on;
+}
+
+void muse_voice_request_chirp(void)
+{
+}
+
+void muse_battery_read(muse_battery_t *out)
+{
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+}
+
+bool muse_battery_drain(const muse_battery_t *b, int *rate10, int *full_h)
+{
+    (void)b;
+    (void)rate10;
+    (void)full_h;
     return false;
 }
 
-void muse_menu_build(lv_obj_t *parent, int w, int h)
+const char *muse_link_state_name(muse_link_state_t state)
 {
-    (void)parent;
-    (void)w;
-    (void)h;
+    switch (state) {
+    case MUSE_LINK_BOOT: return "Starting";
+    case MUSE_LINK_UNPAIRED: return "Ready to pair";
+    case MUSE_LINK_PAIRING: return "App connected";
+    case MUSE_LINK_CONFIRM: return "Confirm pairing";
+    case MUSE_LINK_CONNECTING: return "Connecting";
+    case MUSE_LINK_ONLINE: return "Online";
+    case MUSE_LINK_OFFLINE: return "Offline";
+    case MUSE_LINK_ERROR: return "Error";
+    }
+    return "";
 }
 
-bool muse_menu_tick(float now)
+void muse_link_reset_setup(void)
 {
-    (void)now;
-    return false;
 }
 
-void muse_menu_close(void)
+const char *muse_hatch_state_name(muse_hatch_state_t state)
 {
+    switch (state) {
+    case MUSE_HATCH_NOT_SET: return "Not set up";
+    case MUSE_HATCH_OFFLINE: return "Offline";
+    case MUSE_HATCH_UNTESTED: return "Saved";
+    case MUSE_HATCH_TESTING: return "Connecting";
+    case MUSE_HATCH_REACHABLE: return "Connected";
+    case MUSE_HATCH_UNREACHABLE: return "Can't connect";
+    }
+    return "";
+}
+
+void muse_input_request_power_off(void)
+{
+}
+
+const esp_app_desc_t *esp_app_get_description(void)
+{
+    static const esp_app_desc_t desc = {
+        .version = "sim",
+        .idf_ver = "sim",
+    };
+    return &desc;
 }
 
 void muse_console_write(const void *buf, size_t n)

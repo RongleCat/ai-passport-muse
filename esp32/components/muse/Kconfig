@@ -70,6 +70,10 @@ menu "Muse"
         config MUSE_BOARD_M5STACK_CORES3
             bool "M5Stack CoreS3 (ESP32-S3, 320x240 touch LCD, speaker and microphones)"
             depends on IDF_TARGET_ESP32S3
+
+        config MUSE_BOARD_PASSPORT
+            bool "FoloToy AI Passport (ESP32-C3, 240x320, no PSRAM)"
+            depends on IDF_TARGET_ESP32C3
     endchoice
 
     config MUSE_ENABLED
@@ -91,6 +95,7 @@ menu "Muse"
         default "m5stack_cardputer_adv" if MUSE_BOARD_M5STACK_CARDPUTER_ADV
         default "m5stack_stopwatch" if MUSE_BOARD_M5STACK_STOPWATCH
         default "m5stack_cores3" if MUSE_BOARD_M5STACK_CORES3
+        default "passport" if MUSE_BOARD_PASSPORT
         default "none"
 
     # The Muse tools' serial port: the console UART behind the board's USB
@@ -128,5 +133,64 @@ menu "Muse"
             muse_chat_session.cpp is where a TTS API of your own can speak
             them. Needs PSRAM. Without it, voice notes go over Home Link's own
             session to its paired VM and replies are shown as text.
+
+    config MUSE_PASSPORT_HEAP_LOG
+        bool "Log Passport internal heap every 5 seconds"
+        depends on MUSE_BOARD_PASSPORT
+        default y
+        help
+            A low-priority task prints internal-heap free, minimum-ever and
+            largest free block. Depends on the Passport board, so other
+            boards, including the M5 ones, leave it off. Turn it off once
+            the memory budget is known.
+
+    # Debug only. Default off, so a normal Passport build still starts BLE
+    # while unpaired. Turn on to measure the UI and audio heap without the
+    # controller; the device cannot be discovered until it is off again.
+    config MUSE_PASSPORT_SKIP_BLE
+        bool "Passport: do not start BLE (heap measurement)"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            Skip ble_server_start on this board. Pairing needs the radio, so
+            leave this off for a device someone will pair. Other boards do
+            not see this option.
+
+    # Debug only. Default off. The serial command is compiled in, but nothing
+    # calls it during boot or pairing. Enable from the gitignored
+    # sdkconfig.local when repeating the XMC flash-suspend check.
+    config MUSE_PASSPORT_NVS_STRESS
+        bool "Passport: serial >nvstest flash stress hook"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            Compiles >nvstest. Typing it writes and commits an NVS blob 200
+            times in a spare namespace, then erases that namespace. It does
+            not run at boot and does not touch pairing keys. Leave it off in
+            firmware someone will pair.
+
+    # Debug only. Default off. >snap is always recognized. The pixel dump is
+    # compiled in only while this is y. Enable it from the gitignored
+    # sdkconfig.local when a host has to reconstruct one panel frame.
+    config MUSE_PASSPORT_FLUSH_CAPTURE
+        bool "Passport: serial >snap flush capture"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            After the rounded-corner mask, print each partial draw buffer
+            that is handed to the panel. >snap invalidates the screen once.
+            With this off the command prints @snap off and the dump is not
+            in the binary. Leave it off on firmware someone will pair.
+
+    config MUSE_CJK_FONT
+        bool "Chinese subset font for Passport reply text"
+        depends on MUSE_BOARD_PASSPORT
+        default n
+        help
+            Reply and caption labels use a flash-resident Noto Sans SC
+            subset (GB2312 level 1, its punctuation and fullwidth rows, and
+            printable ASCII). The glyphs are const data in flash, not a RAM
+            cache. Other boards cannot select this, so their firmware stays
+            without the font. The Passport overlay turns it on.
 
 endmenu

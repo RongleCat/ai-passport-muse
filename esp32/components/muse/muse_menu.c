@@ -20,10 +20,14 @@
 #include <string.h>
 
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
+#include "sdkconfig.h"
+#include "muse_ui_text.h"
 
 #include "muse_battery.h"
 #include "muse_ble.h"
@@ -35,6 +39,10 @@
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_voice.h"
+
+#if CONFIG_MUSE_CJK_FONT && CONFIG_MUSE_BOARD_PASSPORT
+LV_FONT_DECLARE(muse_font_cjk_14);
+#endif
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_menu";
@@ -94,7 +102,8 @@ static const char *const ITEM_NAMES[ITEM_COUNT] = {
     [ITEM_CLOSE] = "Close menu",
 };
 
-/* What the talk button does on each row. */
+/* What the talk button does on each row. Passport draws item_action() instead. */
+#if !MUSE_UI_ZH
 static const char *const ITEM_ACTIONS[ITEM_COUNT] = {
     [ITEM_VOLUME] = "Change",
     [ITEM_SPEAKER] = "Toggle",
@@ -110,6 +119,56 @@ static const char *const ITEM_ACTIONS[ITEM_COUNT] = {
     [ITEM_POWER] = "Select",
     [ITEM_CLOSE] = "Close",
 };
+#endif
+
+/* Screen labels. ITEM_NAMES stays English for the select log. */
+static const char *item_label(int item)
+{
+#if MUSE_UI_ZH
+    static const char *const zh[ITEM_COUNT] = {
+        [ITEM_VOLUME] = "音量",
+        [ITEM_SPEAKER] = "扬声器",
+        [ITEM_BRIGHTNESS] = "亮度",
+        [ITEM_MIC] = "麦克风",
+        [ITEM_SLEEP] = "自动休眠",
+        [ITEM_PHONE] = "手机设置",
+        [ITEM_WIFI] = "Wi-Fi",
+        [ITEM_INFO] = "状态",
+        [ITEM_BATTERY] = "电池",
+        [ITEM_RESET] = "重置配对",
+        [ITEM_SLEEP_NOW] = "关闭屏幕",
+        [ITEM_POWER] = "关机",
+        [ITEM_CLOSE] = "关闭菜单",
+    };
+    return zh[item];
+#else
+    return ITEM_NAMES[item];
+#endif
+}
+
+static const char *item_action(int item)
+{
+#if MUSE_UI_ZH
+    static const char *const zh[ITEM_COUNT] = {
+        [ITEM_VOLUME] = "调节",
+        [ITEM_SPEAKER] = "切换",
+        [ITEM_BRIGHTNESS] = "调节",
+        [ITEM_MIC] = "调节",
+        [ITEM_SLEEP] = "调节",
+        [ITEM_PHONE] = "切换",
+        [ITEM_WIFI] = "切换",
+        [ITEM_INFO] = "打开",
+        [ITEM_BATTERY] = "打开",
+        [ITEM_RESET] = "确定",
+        [ITEM_SLEEP_NOW] = "确定",
+        [ITEM_POWER] = "确定",
+        [ITEM_CLOSE] = "关闭",
+    };
+    return zh[item];
+#else
+    return ITEM_ACTIONS[item];
+#endif
+}
 
 /* Ascending; Select moves to the next one and wraps. */
 static const int VOLUME_STEPS[] = { 10, 25, 40, 55, 70, 85, 100 };
@@ -117,6 +176,9 @@ static const int BRIGHT_STEPS[] = { 10, 25, 50, 75, 100 };
 static const int GAIN_STEPS[] = { 0, 6, 12, 18, 24, 30, 36 };
 static const int SLEEP_STEPS[] = { 0, 30, 60, 120, 300, 600 };
 static const char *const SLEEP_NAMES[] = { "Never", "30 s", "1 min", "2 min", "5 min", "10 min" };
+#if MUSE_UI_ZH
+static const char *const SLEEP_NAMES_ZH[] = { "从不", "30 秒", "1 分", "2 分", "5 分", "10 分" };
+#endif
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 typedef enum {
@@ -126,6 +188,7 @@ typedef enum {
     VIEW_BATTERY,
     VIEW_POWER,
     VIEW_RESET,
+    VIEW_LAST,          /* previous reply, full screen; OK leaves without talking */
 } view_t;
 
 static QueueHandle_t s_keys;
@@ -139,6 +202,11 @@ static int s_row_h;
 static float s_last_key;
 static float s_next_refresh;
 static int64_t s_batt_shown_us;   /* the battery page reads the PM stats, so once a second */
+static int s_body_cols = 16;    /* status and last-reply pages, between title and hints */
+static int s_body_rows = 4;
+static int s_status_page;
+static int s_last_page;
+static char s_last_body[1024];
 
 static lv_obj_t *s_root;
 static lv_obj_t *s_title;
@@ -185,17 +253,25 @@ static int value_step(const int *steps, int n, int cur, int direction)
 
 static const char *sleep_name(int secs)
 {
+    const char *const *names = SLEEP_NAMES;
+#if MUSE_UI_ZH
+    names = SLEEP_NAMES_ZH;
+#endif
     for (int i = 0; i < COUNT(SLEEP_STEPS); i++) {
         if (SLEEP_STEPS[i] == secs) {
-            return SLEEP_NAMES[i];
+            return names[i];
         }
     }
-    return "Custom";
+    return MUSE_UI_T("Custom", "自定义");
 }
 
 static void value_text(int item, char *buf, size_t n)
 {
+#if MUSE_UI_ZH
+    static const char *const WIFI_VALUES[] = { "关", "未设置", "连接中", "开", "失败", "未找到" };
+#else
     static const char *const WIFI_VALUES[] = { "Off", "Not set", "Joining", "On", "Failed", "Not found" };
+#endif
     muse_wifi_status_t w;
     muse_power_t p;
 
@@ -204,7 +280,7 @@ static void value_text(int item, char *buf, size_t n)
         snprintf(buf, n, "%d%%", muse_settings_volume());
         break;
     case ITEM_SPEAKER:
-        strlcpy(buf, muse_settings_speaker_on() ? "On" : "Off", n);
+        strlcpy(buf, muse_settings_speaker_on() ? MUSE_UI_T("On", "开") : MUSE_UI_T("Off", "关"), n);
         break;
     case ITEM_BRIGHTNESS:
         snprintf(buf, n, "%d%%", muse_settings_brightness());
@@ -216,7 +292,7 @@ static void value_text(int item, char *buf, size_t n)
         strlcpy(buf, sleep_name(muse_settings_sleep_s()), n);
         break;
     case ITEM_PHONE:
-        strlcpy(buf, muse_settings_ble_on() ? "On" : "Off", n);
+        strlcpy(buf, muse_settings_ble_on() ? MUSE_UI_T("On", "开") : MUSE_UI_T("Off", "关"), n);
         break;
     case ITEM_WIFI:
         muse_wifi_status(&w);
@@ -236,6 +312,42 @@ static void value_text(int item, char *buf, size_t n)
     }
 }
 
+static const char *link_label(muse_link_state_t st)
+{
+#if MUSE_UI_ZH
+    switch (st) {
+    case MUSE_LINK_BOOT: return "启动中";
+    case MUSE_LINK_UNPAIRED: return "可以配对";
+    case MUSE_LINK_PAIRING: return "应用已连接";
+    case MUSE_LINK_CONFIRM: return "请确认配对";
+    case MUSE_LINK_CONNECTING: return "正在连接";
+    case MUSE_LINK_ONLINE: return "在线";
+    case MUSE_LINK_OFFLINE: return "离线";
+    case MUSE_LINK_ERROR: return "出错";
+    default: return "";
+    }
+#else
+    return muse_link_state_name(st);
+#endif
+}
+
+static const char *hatch_label(muse_hatch_state_t st)
+{
+#if MUSE_UI_ZH
+    switch (st) {
+    case MUSE_HATCH_NOT_SET: return "未设置";
+    case MUSE_HATCH_OFFLINE: return "离线";
+    case MUSE_HATCH_UNTESTED: return "已保存";
+    case MUSE_HATCH_TESTING: return "正在连接";
+    case MUSE_HATCH_REACHABLE: return "已连接";
+    case MUSE_HATCH_UNREACHABLE: return "无法连接";
+    default: return "";
+    }
+#else
+    return muse_hatch_state_name(st);
+#endif
+}
+
 static void status_text(char *buf, size_t n)
 {
     muse_wifi_status_t w;
@@ -246,16 +358,24 @@ static void status_text(char *buf, size_t n)
     muse_ble_status(&b);
     muse_power_t p = muse_state_power();
 
-    char batt[16] = "USB";
+    char batt[24] = "USB";
     if (p.battery_pct >= 0) {
-        snprintf(batt, sizeof(batt), "%d%%%s", p.battery_pct, p.charging ? " +" : "");
+        snprintf(batt, sizeof(batt), "%d%%%s", p.battery_pct, p.charging ? MUSE_UI_T(" +", " 充电") : "");
     }
-    const char *phone = b.state == MUSE_BLE_OFF ? "Off" : (b.state == MUSE_BLE_CONNECTED ? "Connected" : b.name);
-    snprintf(buf, n, "Wi-Fi %s\nIP    %s\nLink  %s\nMuse  %s\nPhone %s\nPower %s\nVer   %s",
-             w.state == MUSE_WIFI_CONNECTED ? w.ssid : (w.state == MUSE_WIFI_OFF ? "off" : "offline"),
-             w.state == MUSE_WIFI_CONNECTED ? w.ip : "-", muse_link_state_name(muse_link_state()),
-             muse_hatch_state_name(h.state), phone, batt,
+    const char *phone = b.state == MUSE_BLE_OFF ? MUSE_UI_T("Off", "关")
+                        : (b.state == MUSE_BLE_CONNECTED ? MUSE_UI_T("Connected", "已连接") : b.name);
+    const char *wifi = w.state == MUSE_WIFI_CONNECTED ? w.ssid
+                       : (w.state == MUSE_WIFI_OFF ? MUSE_UI_T("off", "关") : MUSE_UI_T("offline", "离线"));
+    const char *ip = w.state == MUSE_WIFI_CONNECTED ? w.ip : "-";
+#if MUSE_UI_ZH
+    snprintf(buf, n, "Wi-Fi %s\nIP %s\n连接 %s\nMuse %s\n手机 %s\n电量 %s\n版本 %s",
+             wifi, ip, link_label(muse_link_state()), hatch_label(h.state), phone, batt,
              esp_app_get_description()->version);
+#else
+    snprintf(buf, n, "Wi-Fi %s\nIP    %s\nLink  %s\nMuse  %s\nPhone %s\nPower %s\nVer   %s",
+             wifi, ip, link_label(muse_link_state()), hatch_label(h.state), phone, batt,
+             esp_app_get_description()->version);
+#endif
     muse_text_to_ascii(buf, n);   /* network and phone names can have curly quotes */
 }
 
@@ -274,7 +394,8 @@ static void battery_text(char *buf, size_t n)
     muse_battery_t b;
     muse_battery_read(&b);
     if (!b.started) {
-        strlcpy(buf, "Unplug USB to\nmeasure how\nlong the\nbattery lasts.", n);
+        strlcpy(buf, MUSE_UI_T("Unplug USB to\nmeasure how\nlong the\nbattery lasts.",
+                               "拔掉 USB 后\n才能测量\n电池续航。"), n);
         return;
     }
     char t[24], rate[24] = "-", full[24] = "-", wakes[24] = "-", off[24], slept[24], busy[24];
@@ -295,13 +416,77 @@ static void battery_text(char *buf, size_t n)
     pm_text(off, b.screen_off_pm);
     pm_text(slept, b.slept_pm);
     pm_text(busy, b.busy_pm);
+#if MUSE_UI_ZH
+    snprintf(buf, n, "%s %s\n电量 %d>%d%%\n耗电 %s\n充满 %s\n息屏 %s\n睡眠 %s\n唤醒 %s\n忙碌 %s",
+             b.running ? "使用电池" : "上次记录", t, b.pct_start, b.pct_now, rate, full, off, slept, wakes, busy);
+#else
     snprintf(buf, n, "%s %s\nBatt  %d>%d%%\nRate  %s\nFull  %s\nOff   %s\nSleep %s\nWakes %s\nBusy  %s",
              b.running ? "On batt" : "Last run", t, b.pct_start, b.pct_now, rate, full, off, slept, wakes, busy);
+#endif
+}
+
+/* The visible page only. A 1 KB body stays in s_last_body; this is one screen of it. */
+static void show_page(const char *text, int *page)
+{
+    static char view[1024];
+    int count = 1;
+    if (*page < 0) {
+        *page = 0;
+    }
+    if (!muse_text_page(text, s_body_cols, s_body_rows, *page, view, sizeof(view), &count)) {
+        *page = count > 0 ? count - 1 : 0;
+        muse_text_page(text, s_body_cols, s_body_rows, *page, view, sizeof(view), &count);
+    }
+    set_text(s_page, view);
+    if (count > 1) {
+        char hint[24];
+        snprintf(hint, sizeof(hint), "%d/%d", *page + 1, count);
+        set_text(s_hint_down, hint);
+    } else {
+        set_text(s_hint_down, "");   /* one page: up/down do nothing, so no hint */
+    }
+}
+
+static void step_text(const char *text, int *page, int dir)
+{
+    int count = 1;
+    char scratch[4];
+    muse_text_page(text, s_body_cols, s_body_rows, 0, scratch, sizeof(scratch), &count);
+    int next = *page + dir;
+    if (count <= 1 || next < 0 || next >= count) {
+        return;
+    }
+    *page = next;
+    show_page(text, page);
+}
+
+static void render_status(void)
+{
+    char full[512];
+    status_text(full, sizeof(full));
+    show_page(full, &s_status_page);
+}
+
+static void step_status(int dir)
+{
+    char full[512];
+    status_text(full, sizeof(full));
+    step_text(full, &s_status_page, dir);
+}
+
+static void render_kept(void)
+{
+    show_page(s_last_body, &s_last_page);
+}
+
+static void step_kept(int dir)
+{
+    step_text(s_last_body, &s_last_page, dir);
 }
 
 static void refresh(void)
 {
-    char buf[160];
+    char buf[384];
     if (s_view == VIEW_LIST) {
         for (int i = 0; i < ITEM_COUNT; i++) {
             value_text(i, buf, sizeof(buf));
@@ -318,12 +503,11 @@ static void refresh(void)
                 s_first = s_sel - s_visible_rows + 1;
             }
             lv_obj_scroll_to_y(s_list, s_first * s_row_h, LV_ANIM_OFF);
-            select_hint(ITEM_ACTIONS[s_sel]);
+            select_hint(item_action(s_sel));
             s_shown_sel = s_sel;
         }
     } else if (s_view == VIEW_STATUS) {
-        status_text(buf, sizeof(buf));
-        set_text(s_page, buf);
+        render_status();
     } else if (s_view == VIEW_BATTERY) {
         int64_t now = esp_timer_get_time();
         if (!s_batt_shown_us || now - s_batt_shown_us >= 1000000) {
@@ -333,6 +517,32 @@ static void refresh(void)
         }
     }
 }
+
+#if CONFIG_MUSE_BOARD_PASSPORT
+static const char *view_name(view_t view)
+{
+    switch (view) {
+    case VIEW_LIST: return "list";
+    case VIEW_STATUS: return "status";
+    case VIEW_BATTERY: return "battery";
+    case VIEW_POWER: return "power";
+    case VIEW_RESET: return "reset";
+    case VIEW_LAST: return "last";
+    default: return "closed";
+    }
+}
+
+/* Runs on the LVGL task. The watermark is the least free since that task
+ * started, so a later ">stacks" still sees the worst menu. */
+static void log_menu_stack(const char *where)
+{
+    unsigned free_b = (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t));
+    ESP_LOGI(TAG, "stack %s task=%s free=%u heap_free=%u heap_min=%u", where,
+             pcTaskGetName(NULL), free_b,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+}
+#endif
 
 static void show(view_t view)
 {
@@ -346,33 +556,50 @@ static void show(view_t view)
 
     switch (view) {
     case VIEW_STATUS:
+        set_text(s_title, MUSE_UI_T("STATUS", "状态"));
+        select_hint(MUSE_UI_T("Back", "返回"));   /* OK returns to the list; Down pages, it is not Back */
+        s_status_page = 0;
+        break;
     case VIEW_BATTERY:
-        set_text(s_title, view == VIEW_STATUS ? "STATUS" : "BATTERY");
-        set_text(s_hint_down, muse_board->keyboard ? "Esc Back" : "Back");
-        select_hint("Back");
+        set_text(s_title, MUSE_UI_T("BATTERY", "电池"));
+        set_text(s_hint_down, muse_board->keyboard ? "Esc Back" : MUSE_UI_T("Back", "返回"));
+        select_hint(MUSE_UI_T("Back", "返回"));
+        break;
+    case VIEW_LAST:
+        set_text(s_title, MUSE_UI_T("LAST", "上一条"));
+        select_hint(MUSE_UI_T("Back", "返回"));   /* OK returns home and must not start talk */
+        render_kept();
         break;
     case VIEW_POWER: {
         char text[96];
+#if MUSE_UI_ZH
+        snprintf(text, sizeof(text), "关闭 Muse?\n\n按下键重新开机。");
+#else
         snprintf(text, sizeof(text), "Turn Muse off?\n\nPress the %s button to turn it back on.",
                  muse_board->keyboard ? "GO" : muse_board->aux_button);
-        set_text(s_title, "POWER OFF");
+#endif
+        set_text(s_title, MUSE_UI_T("POWER OFF", "关机"));
         set_text(s_page, text);
-        set_text(s_hint_down, muse_board->keyboard ? "Esc Cancel" : "Cancel");
-        select_hint("Power off");
+        set_text(s_hint_down, muse_board->keyboard ? "Esc Cancel" : MUSE_UI_T("Cancel", "取消"));
+        select_hint(MUSE_UI_T("Power off", "关机"));
         break;
     }
     case VIEW_RESET:
-        set_text(s_title, "RESET PAIRING");
-        set_text(s_page, "Forget Wi-Fi and the Muse app pairing, then restart?");
-        set_text(s_hint_down, muse_board->keyboard ? "Esc Cancel" : "Cancel");
-        select_hint("Reset");
+        set_text(s_title, MUSE_UI_T("RESET PAIRING", "重置配对"));
+        set_text(s_page, MUSE_UI_T("Forget Wi-Fi and the Muse app pairing, then restart?",
+                                   "忘记 Wi-Fi 和 Muse 应用的配对，然后重启?"));
+        set_text(s_hint_down, muse_board->keyboard ? "Esc Cancel" : MUSE_UI_T("Cancel", "取消"));
+        select_hint(MUSE_UI_T("Reset", "重置"));
         break;
     default:
-        set_text(s_title, muse_board->keyboard ? "MENU  ^v Move  <> Change" : "MENU");
+        set_text(s_title, muse_board->keyboard ? "MENU  ^v Move  <> Change" : MUSE_UI_T("MENU", "菜单"));
         set_text(s_hint_down, s_down_text);
         break;
     }
     refresh();
+#if CONFIG_MUSE_BOARD_PASSPORT
+    log_menu_stack(view_name(view));
+#endif
 }
 
 static void open_menu(void)
@@ -382,6 +609,21 @@ static void open_menu(void)
     lv_obj_move_foreground(s_root);
     lv_obj_remove_flag(s_root, LV_OBJ_FLAG_HIDDEN);
     show(VIEW_LIST);
+    s_open = true;
+}
+
+/* Covered, so the talk button is Select. Select on this view closes it. */
+static void open_last(void)
+{
+    if (!s_root || !muse_hatch_last_reply(s_last_body, sizeof(s_last_body))) {
+        ESP_LOGI(TAG, "no previous reply");
+        return;
+    }
+    ESP_LOGI(TAG, "last reply");
+    s_last_page = 0;
+    lv_obj_move_foreground(s_root);
+    lv_obj_remove_flag(s_root, LV_OBJ_FLAG_HIDDEN);
+    show(VIEW_LAST);
     s_open = true;
 }
 
@@ -441,8 +683,12 @@ static void handle(muse_menu_key_t key)
 {
     switch (s_view) {
     case VIEW_CLOSED:
-        if (key == MUSE_MENU_DOWN || key == MUSE_MENU_UP ||
-            key == MUSE_MENU_BACK || key == MUSE_MENU_SELECT) open_menu();
+        if (key == MUSE_MENU_LAST) {
+            open_last();
+        } else if (key == MUSE_MENU_DOWN || key == MUSE_MENU_UP ||
+                   key == MUSE_MENU_BACK || key == MUSE_MENU_SELECT) {
+            open_menu();
+        }
         break;
     case VIEW_LIST:
         if (key == MUSE_MENU_BACK) {
@@ -457,6 +703,14 @@ static void handle(muse_menu_key_t key)
         }
         break;
     case VIEW_STATUS:
+        if (key == MUSE_MENU_UP) {
+            step_status(-1);
+        } else if (key == MUSE_MENU_DOWN) {
+            step_status(1);
+        } else if (key == MUSE_MENU_BACK || key == MUSE_MENU_LEFT || key == MUSE_MENU_SELECT) {
+            show(VIEW_LIST);
+        }
+        break;
     case VIEW_BATTERY:
         if (key == MUSE_MENU_BACK || key == MUSE_MENU_LEFT ||
             key == MUSE_MENU_SELECT || key == MUSE_MENU_DOWN) show(VIEW_LIST);
@@ -474,6 +728,15 @@ static void handle(muse_menu_key_t key)
                 muse_state_set_caption("RESETTING...");
                 muse_link_reset_setup();
             }
+        }
+        break;
+    case VIEW_LAST:
+        if (key == MUSE_MENU_UP) {
+            step_kept(-1);
+        } else if (key == MUSE_MENU_DOWN) {
+            step_kept(1);
+        } else if (key == MUSE_MENU_SELECT || key == MUSE_MENU_BACK) {
+            muse_menu_close();
         }
         break;
     }
@@ -514,6 +777,14 @@ void muse_menu_build(lv_obj_t *parent, int w, int h)
     bool small = h < 200 || w < 200;
     const lv_font_t *font = small ? FONT_COMPACT : &lv_font_montserrat_20;
     const lv_font_t *fine = small ? &lv_font_unscii_8 : &lv_font_unscii_16;
+#if MUSE_UI_ZH
+    /* Words only. Button icons stay on Montserrat, which holds LV_SYMBOL_*. */
+    const lv_font_t *word = &muse_font_cjk_14;
+#else
+    const lv_font_t *word = NULL;
+#endif
+    const lv_font_t *title_font = word ? word : fine;
+    const lv_font_t *row_font = word ? word : font;
     int pad = small ? 2 : 8;
     int title_h = small ? 13 : 40;
     int hint_h = small ? 17 : 44;
@@ -535,8 +806,8 @@ void muse_menu_build(lv_obj_t *parent, int w, int h)
     lv_obj_remove_flag(s_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
 
-    s_title = label(s_root, fine, COLOR_DIM, "MENU");
-    lv_obj_set_style_text_letter_space(s_title, 1, 0);
+    s_title = label(s_root, title_font, COLOR_DIM, MUSE_UI_T("MENU", "菜单"));
+    lv_obj_set_style_text_letter_space(s_title, word ? 0 : 1, 0);
     lv_obj_align(s_title, LV_ALIGN_TOP_MID, 0, small ? 3 : 12);
 
     s_list = lv_obj_create(s_root);
@@ -556,13 +827,19 @@ void muse_menu_build(lv_obj_t *parent, int w, int h)
         lv_obj_set_style_bg_color(r, lv_color_hex(COLOR_SELECTED), 0);
         lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
         uint32_t color = i == ITEM_POWER ? COLOR_DANGER : COLOR_TEXT;
-        lv_obj_align(label(r, font, color, ITEM_NAMES[i]), LV_ALIGN_LEFT_MID, 0, 0);
-        s_values[i] = label(r, font, COLOR_ACCENT, "");
+        lv_obj_align(label(r, row_font, color, item_label(i)), LV_ALIGN_LEFT_MID, 0, 0);
+        s_values[i] = label(r, row_font, COLOR_ACCENT, "");
         lv_obj_align(s_values[i], LV_ALIGN_RIGHT_MID, 0, 0);
         s_rows[i] = r;
     }
 
     s_page = label(s_root, fine, COLOR_TEXT, "");
+#if CONFIG_MUSE_CJK_FONT && CONFIG_MUSE_BOARD_PASSPORT
+    /* Home captions use this face. The reader should too, not unscii. */
+    if (!small) {
+        lv_obj_set_style_text_font(s_page, &muse_font_cjk_14, 0);
+    }
+#endif
     lv_obj_set_width(s_page, w - 4 * pad - strip);
     lv_obj_set_style_text_line_space(s_page, small ? 3 : 8, 0);
     lv_label_set_long_mode(s_page, LV_LABEL_LONG_MODE_WRAP);
@@ -576,7 +853,7 @@ void muse_menu_build(lv_obj_t *parent, int w, int h)
     lv_obj_set_style_bg_color(rule, lv_color_hex(COLOR_RULE), 0);
     lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
     lv_obj_align(rule, LV_ALIGN_BOTTOM_MID, 0, -hint_h);
-    s_hint_down = label(s_root, font, COLOR_TEXT, "");
+    s_hint_down = label(s_root, row_font, COLOR_TEXT, "");
     if (aux_side) {
         /* Reads downwards, the arrow pointing down; centred on the icon's
          * spot so it stays put as the text changes. */
@@ -586,11 +863,32 @@ void muse_menu_build(lv_obj_t *parent, int w, int h)
         lv_obj_set_style_transform_pivot_y(s_hint_down, lv_pct(50), 0);
         lv_obj_align(s_hint_down, LV_ALIGN_CENTER, (w - strip) / 2, aux->y);
     } else {
-        s_down_text = muse_board->keyboard ? "Esc Back" : LV_SYMBOL_DOWN " Down";
+        s_down_text = muse_board->keyboard ? "Esc Back" : MUSE_UI_T(LV_SYMBOL_DOWN " Down", "下一项");
         align_on_bar(s_hint_down, aux->align, pad);
     }
-    s_hint_select = label(s_root, font, COLOR_TEXT, "");
+    s_hint_select = label(s_root, row_font, COLOR_TEXT, "");
     align_on_bar(s_hint_select, talk->align, pad);
+
+    /* Body sits between the title and the hint bar. Whole pages, not a pixel scroll. */
+    int body_h = h - hint_h - (title_h + pad);
+    const lv_font_t *body_font = lv_obj_get_style_text_font(s_page, 0);
+    int cw = lv_font_get_glyph_width(body_font, 'M', ' ');
+    int pitch = lv_font_get_line_height(body_font) + lv_obj_get_style_text_line_space(s_page, 0);
+    int body_w = w - 4 * pad - strip;
+    if (cw < 1) {
+        cw = 8;
+    }
+    if (pitch < 1) {
+        pitch = 16;
+    }
+    s_body_cols = body_w / cw;
+    if (s_body_cols < 4) {
+        s_body_cols = 4;
+    }
+    s_body_rows = body_h / pitch;
+    if (s_body_rows < 1) {
+        s_body_rows = 1;
+    }
 }
 
 bool muse_menu_tick(float now)
@@ -625,4 +923,7 @@ void muse_menu_close(void)
     s_view = VIEW_CLOSED;
     s_open = false;
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
+#if CONFIG_MUSE_BOARD_PASSPORT
+    log_menu_stack("close");
+#endif
 }

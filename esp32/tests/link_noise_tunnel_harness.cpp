@@ -26,6 +26,8 @@
 #include <vector>
 #include "link_noise_control_test_support.h"
 
+extern "C" bool noise_ctrl_ws_tx_busy(void) { return false; }
+
 // SDK doubles; the included production .cpp has only SDK includes removed.
 using UBaseType_t = unsigned;
 constexpr int pdTRUE = 1, pdFALSE = 0;

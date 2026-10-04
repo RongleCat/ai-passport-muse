@@ -30,6 +30,15 @@
  */
 esp_err_t muse_voice_start(QueueHandle_t queue);
 
+/* Passport: while the Muse app is connected (or ">park" is set), stop the
+ * mic task and free its stack, the codec, and the I2S DMA. Call on link
+ * changes and from the input loop so a failed pair brings the mic back.
+ * Other boards ignore it. */
+void muse_voice_service(void);
+
+/* Serial bench: hold the mic path down until cleared, independent of link. */
+void muse_voice_force_hold(bool hold);
+
 /* While on (settings' Sound page), idle mic audio feeds muse_voice_monitor_db(). */
 void muse_voice_set_monitor(bool on);
 /* Smoothed mic level in dBFS (fast attack, slow release). */
@@ -37,6 +46,9 @@ float muse_voice_monitor_db(void);
 
 /* Plays a short chirp at the current volume (when idle). */
 void muse_voice_request_chirp(void);
+
+/* Runs muse_audio_selftest() on the voice task (when idle). */
+void muse_voice_request_selftest(void);
 
 /* Runs muse_audio_loopback_test() at the current volume (when idle); results go to the log. */
 void muse_voice_request_loopback(void);

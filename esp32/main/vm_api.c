@@ -25,6 +25,8 @@
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "sdkconfig.h"
+#include "http_proxy.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -125,6 +127,46 @@ static char *str_dup(const cJSON *item) {
 static int http_json(const char *url, esp_http_client_method_t method,
                      const char *auth_header, const char *body,
                      resp_buf_t *resp, int *status_out) {
+#if MUSE_HTTP_PROXY_ENABLE
+    if (!url || !resp || !status_out) return VM_API_ERR_FAILED;
+    *resp = (resp_buf_t){ .auth_header = auth_header };
+    *status_out = 0;
+    const char *method_s = NULL;
+    if (method == HTTP_METHOD_GET) method_s = "GET";
+    else if (method == HTTP_METHOD_POST) method_s = "POST";
+    else return VM_API_ERR_FAILED;
+
+    char *body_out = NULL;
+    size_t body_len = 0;
+    int st = 0;
+    if (muse_https_exchange(url, method_s, auth_header, body, 15000,
+                            &st, &body_out, &body_len) != 0) {
+        ESP_LOGW(TAG, "HTTP request failed: proxy");
+        free(body_out);
+        return VM_API_ERR_FAILED;
+    }
+    *status_out = st;
+    resp->buf = body_out;
+    resp->len = body_len;
+    resp->cap = body_out ? body_len + 1 : 0;
+    if (st == 401 || st == 403) {
+        ESP_LOGW(TAG, "HTTP %d auth failure", st);
+        free(resp->buf);
+        resp->buf = NULL;
+        resp->len = 0;
+        resp->cap = 0;
+        return VM_API_ERR_AUTH;
+    }
+    if (st < 200 || st >= 300) {
+        ESP_LOGW(TAG, "HTTP %d", st);
+        free(resp->buf);
+        resp->buf = NULL;
+        resp->len = 0;
+        resp->cap = 0;
+        return VM_API_ERR_FAILED;
+    }
+    return 0;
+#else
     if (!url || !resp || !status_out) return VM_API_ERR_FAILED;
     *resp = (resp_buf_t){ .auth_header = auth_header };
     *status_out = 0;
@@ -173,6 +215,7 @@ static int http_json(const char *url, esp_http_client_method_t method,
         return VM_API_ERR_FAILED;
     }
     return 0;
+#endif
 }
 
 static bool http_status_retryable(int status) {

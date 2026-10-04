@@ -106,6 +106,11 @@ muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap);
  */
 bool muse_hatch_turn_caption(size_t played, char *out, size_t cap);
 
+/* Keeps the reply that just finished. The live caption is cleared with the turn. */
+void muse_hatch_keep_reply(const char *text);
+/* Copies the kept reply. False when none was kept. */
+bool muse_hatch_last_reply(char *out, size_t cap);
+
 /* Reply speech as 16 kHz mono. Waits up to wait_ms for some; returns frames read. */
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms);
 

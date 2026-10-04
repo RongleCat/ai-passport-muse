@@ -24,17 +24,17 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-WIDTH = HEIGHT = 412
 HERE = Path(__file__).resolve().parent
 SCENARIOS = tuple(sorted((HERE / "scenarios").glob("*.txt")))
 
 
 def read_ppm(path: Path) -> bytes:
     raw = path.read_bytes()
-    header = f"P6\n{WIDTH} {HEIGHT}\n255\n".encode()
-    assert raw.startswith(header), f"{path}: wrong PPM header"
-    pixels = raw[len(header) :]
-    assert len(pixels) == WIDTH * HEIGHT * 3, f"{path}: truncated framebuffer"
+    header, pixels = raw.split(b"255\n", 1)
+    fields = header.decode().split()
+    assert len(fields) == 3 and fields[0] == "P6", f"{path}: wrong PPM header"
+    width, height = map(int, fields[1:])
+    assert len(pixels) == width * height * 3, f"{path}: truncated framebuffer"
     assert len(set(pixels)) > 8, f"{path}: framebuffer has too few colours"
     return pixels
 
