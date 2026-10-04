@@ -36,37 +36,38 @@ ESP32-C3 board.
 
 ## Build and flash
 
-Use ESP-IDF v6.0.1. Keep credentials in the ignored build configuration; do
-not add an SDK token, Wi-Fi SSID, or password to an overlay or commit.
+The repository README is the full guide. Short form, using ESP-IDF v6.0.1
+and the `esp32c3` tools:
 
-The LAN proxy is the `MUSE_HTTP_PROXY_HOST` and `MUSE_HTTP_PROXY_PORT`
-environment variables, read at build time. Leave the host unset when a soft
-router already transparent-proxies the LAN. Otherwise set the IPv4 address
-and port of a proxy machine on the LAN. See the repository README.
+Put the SDK token in gitignored `build-passport/sdkconfig.local`. Do not add
+a token, Wi-Fi SSID, password, or proxy address to a tracked overlay. Set
+`MUSE_HTTP_PROXY_HOST` to an IPv4 address only when the LAN has no
+transparent proxy. The variables are read on every build.
 
 ```sh
 . ~/esp/esp-idf-v6/export.sh
 cd esp32
 idf.py -B build-passport -DIDF_TARGET=esp32c3 \
   -DSDKCONFIG=build-passport/sdkconfig \
-  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-passport" \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-passport;build-passport/sdkconfig.local" \
   build
 ```
 
-`tools/muse/board.sh build passport` builds its normal isolated profile. For
-the T6/T9/T10-style `build-passport` directory, do **not** use `idf.py flash`:
-ESP-IDF 6.0.1 splits `SERIAL_TOOL`. Flash the generated arguments directly
-instead:
+Do not build this directory with `tools/muse/board.sh`; that script deletes
+`managed_components`. Do not use `idf.py flash`: ESP-IDF 6.0.1 splits
+`SERIAL_TOOL`. Flash the generated arguments directly, with every button
+released. Do not pass `--erase-all`.
 
 ```sh
 cd esp32/build-passport
-python -m esptool --chip esp32c3 -p <PORT> --before default-reset \
-  --after hard-reset write-flash @flash_args
+python -m esptool --chip esp32c3 -p <PORT> -b 460800 \
+  --before default-reset --after hard-reset write-flash @flash_args
 ```
 
 The generated file supplies bootloader at `0x0`, partition table at `0x10000`,
 OTA data at `0x1d000`, and the application at `0x20000`. Check for `Hash of
-data verified` for every segment. To recover factory firmware, use a known
+data verified` for every segment. A normal reflash leaves NVS pairing, Wi-Fi,
+and screen settings in place. To recover factory firmware, use a known
 backup without changing its layout:
 
 ```sh
