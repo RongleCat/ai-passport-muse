@@ -40,6 +40,7 @@
 #include "host/ble_uuid.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
+#include "host/ble_store.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
@@ -675,9 +676,18 @@ static const struct ble_gatt_svc_def s_svcs[] = {
 
 static bool notify_payload(const uint8_t *data, size_t len) {
     if (s_shutting_down) return false;
-    if (!s_subscribed || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) return false;
+    if (!s_subscribed || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        /* TX chunked is logged before this. Without this line a missed
+         * subscribe looks like a sent reply. */
+        ESP_LOGW(TAG, "notify skipped subscribed=%d conn=%d",
+                 s_subscribed, (int)s_conn_handle);
+        return false;
+    }
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
-    if (!om) return false;
+    if (!om) {
+        ESP_LOGW(TAG, "notify mbuf failed len=%u", (unsigned)len);
+        return false;
+    }
     int rc = ble_gatts_notify_custom(s_conn_handle, s_tx_handle, om);
     if (rc != 0) {
         ESP_LOGW(TAG, "notify rc=%d", rc);
@@ -724,9 +734,14 @@ static bool send_chunked_locked(const char *data, uint32_t record_generation) {
         buf[1] = (uint8_t)i;
         buf[2] = (uint8_t)total_chunks;
         memcpy(buf + CHUNK_HEADER_BYTES, data + off, flen);
-        if (!notify_payload(buf, flen + CHUNK_HEADER_BYTES)) return false;
+        if (!notify_payload(buf, flen + CHUNK_HEADER_BYTES)) {
+            ESP_LOGW(TAG, "TX aborted at chunk %u/%u",
+                     (unsigned)(i + 1), (unsigned)total_chunks);
+            return false;
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
+    ESP_LOGI(TAG, "TX sent %u chunks", (unsigned)total_chunks);
     return true;
 }
 
@@ -829,6 +844,44 @@ void ble_server_full_shutdown(void) {
 
 // ---- GAP / NimBLE host wiring ----------------------------------------------
 
+/* Identical lines inside 300 ms collapse. CONNECT then SUBSCRIBE stay
+ * separate; a connection-parameter storm does not. */
+static void gap_log(const char *line) {
+    static TickType_t last;
+    static char prev[96];
+    static unsigned extra;
+    TickType_t now = xTaskGetTickCount();
+    if (prev[0] && strncmp(prev, line, sizeof(prev)) == 0
+        && (TickType_t)(now - last) < pdMS_TO_TICKS(300)) {
+        extra++;
+        return;
+    }
+    if (extra) {
+        ESP_LOGI(TAG, "gap %s (+%u)", prev, extra);
+        extra = 0;
+    }
+    ESP_LOGI(TAG, "gap %s", line);
+    strlcpy(prev, line, sizeof(prev));
+    last = now;
+}
+
+static const char *subscribe_reason(uint8_t reason) {
+    switch (reason) {
+    case BLE_GAP_SUBSCRIBE_REASON_WRITE: return "write";
+    case BLE_GAP_SUBSCRIBE_REASON_TERM: return "term";
+    case BLE_GAP_SUBSCRIBE_REASON_RESTORE: return "restore";
+    default: return "other";
+    }
+}
+
+static void log_bonds(const char *when) {
+    int our = -1, peer = -1, cccd = -1;
+    if (ble_store_util_count(BLE_STORE_OBJ_TYPE_OUR_SEC, &our) != 0) our = -1;
+    if (ble_store_util_count(BLE_STORE_OBJ_TYPE_PEER_SEC, &peer) != 0) peer = -1;
+    if (ble_store_util_count(BLE_STORE_OBJ_TYPE_CCCD, &cccd) != 0) cccd = -1;
+    ESP_LOGI(TAG, "bonds %s our=%d peer=%d cccd=%d", when, our, peer, cccd);
+}
+
 static int gap_event_cb(struct ble_gap_event *event, void *arg) {
     int companion_rc = 0;
     if (s_companion.on_gap_event && !s_shutting_down) {
@@ -842,13 +895,32 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
                 s_advertising_active = false;
                 s_plaintext_status_blocked = false;
                 ESP_LOGI(TAG, "connected conn_handle=%d", s_conn_handle);
+                {
+                    char line[96];
+                    snprintf(line, sizeof(line), "CONNECT status=0 conn=%u",
+                             event->connect.conn_handle);
+                    gap_log(line);
+                }
+                log_bonds("connect");
             } else {
                 s_advertising_active = false;
                 ESP_LOGI(TAG, "connect failed status=%d", event->connect.status);
+                {
+                    char line[96];
+                    snprintf(line, sizeof(line), "CONNECT status=%d",
+                             event->connect.status);
+                    gap_log(line);
+                }
                 if (!s_shutting_down) start_advertising();
             }
             break;
         case BLE_GAP_EVENT_DISCONNECT:
+            {
+                char line[96];
+                snprintf(line, sizeof(line), "DISCONNECT reason=%d",
+                         event->disconnect.reason);
+                gap_log(line);
+            }
             ESP_LOGI(TAG, "disconnect reason=%d", event->disconnect.reason);
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             s_subscribed = false;
@@ -862,19 +934,58 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
             if (!s_shutting_down && s_advertising_enabled) start_advertising();
             else if (!s_shutting_down && s_companion_advertising) start_advertising();
             break;
-        case BLE_GAP_EVENT_SUBSCRIBE:
+        case BLE_GAP_EVENT_SUBSCRIBE: {
+            char line[96];
+            snprintf(line, sizeof(line),
+                     "SUBSCRIBE attr=%u notify=%d reason=%s",
+                     event->subscribe.attr_handle,
+                     event->subscribe.cur_notify,
+                     subscribe_reason(event->subscribe.reason));
+            gap_log(line);
             if (event->subscribe.attr_handle == s_tx_handle) {
                 s_subscribed = event->subscribe.cur_notify;
-                ESP_LOGI(TAG, "subscribe notify=%d", s_subscribed);
+                ESP_LOGI(TAG, "subscribe notify=%d reason=%s",
+                         s_subscribed, subscribe_reason(event->subscribe.reason));
                 if (s_subscribed) {
                     xTaskCreate(client_connected_task, "ble_conn", 4096, NULL, 5, NULL);
                 }
             }
             break;
+        }
         case BLE_GAP_EVENT_MTU:
             s_mtu = event->mtu.value;
             ESP_LOGI(TAG, "mtu=%d conn=%d", event->mtu.value, event->mtu.conn_handle);
             break;
+        case BLE_GAP_EVENT_ENC_CHANGE: {
+            char line[96];
+            snprintf(line, sizeof(line), "ENC_CHANGE status=%d conn=%u",
+                     event->enc_change.status, event->enc_change.conn_handle);
+            gap_log(line);
+            break;
+        }
+        case BLE_GAP_EVENT_CONN_UPDATE: {
+            char line[96];
+            snprintf(line, sizeof(line), "CONN_UPDATE status=%d conn=%u",
+                     event->conn_update.status, event->conn_update.conn_handle);
+            gap_log(line);
+            break;
+        }
+        case BLE_GAP_EVENT_NOTIFY_TX:
+            if (event->notify_tx.status != 0
+                && event->notify_tx.attr_handle == s_tx_handle) {
+                char line[96];
+                snprintf(line, sizeof(line), "NOTIFY_TX status=%d attr=%u",
+                         event->notify_tx.status, event->notify_tx.attr_handle);
+                gap_log(line);
+            }
+            break;
+        case BLE_GAP_EVENT_REPEAT_PAIRING: {
+            char line[96];
+            snprintf(line, sizeof(line), "REPEAT_PAIRING conn=%u",
+                     event->repeat_pairing.conn_handle);
+            gap_log(line);
+            break;
+        }
         default:
             break;
     }
@@ -940,6 +1051,7 @@ static void on_sync(void) {
         return;
     }
     s_synced = true;
+    log_bonds("sync");
     start_advertising();
 }
 

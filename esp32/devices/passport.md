@@ -98,6 +98,7 @@ not a promise for an untested session.
 | T8, after 21 menu open/close cycles | 26536 / 22528 | No menu stack-protection panic. |
 | T9, unpaired with BLE, Wi-Fi, UI, and idle audio | 28240 / 22528 | Pairing decrypt fit test passed; real phone pairing was not rerun. |
 | T10 final CJK image, after boot | 28840 / 22528 | Above the 24 KiB minimum and 16 KiB largest-block review thresholds. |
+| T14, unpaired boot, BLE advertising, Wi-Fi joined, audio on | 27872 / 22528 | Still above those review thresholds. One boot. The GAP log did not change NimBLE pool sizes. |
 | T10 probe/sleep-wake history | 27120 / 22528 | Still above those review thresholds. |
 | T10 NVS stress measurement | 19992 / — | 200 commits completed; this intentional stress minimum is not the normal-session budget. |
 
@@ -140,6 +141,16 @@ free). I2S remains 4 descriptors × 160 frames: 10 ms per buffer and roughly
   restores ADC; do not treat `gpio_during_adc` as a wake-level result.
 - Key logs are rate-limited to about 300 ms; a later line can include
   `(+N suppressed)`.
+- Link GAP lines use the same 300 ms collapse for an identical line.
+  `gap CONNECT`, `gap SUBSCRIBE` (`reason=write|term|restore`),
+  `gap ENC_CHANGE`, `gap CONN_UPDATE`, `gap DISCONNECT`, and a failed
+  `gap NOTIFY_TX` are `ESP_LOGI` on the default image. NimBLE's own host
+  log stays at WARNING. `bonds sync|connect our= peer= cccd=` counts
+  stored NimBLE bonds. `TX sent N chunks` means every notification in
+  that reply was accepted by the host; `notify skipped`, `notify mbuf
+  failed`, `notify rc=`, or `TX aborted` means it was not. `TX chunked`
+  is printed before the send and does not by itself mean the phone got
+  the bytes.
 
 ## Known limits and unverified checks
 
