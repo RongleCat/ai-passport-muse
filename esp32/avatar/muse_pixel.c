@@ -1,10 +1,18 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-
-#include "muse_pixel.h"
+// Copyright (c) 2026 ronglecat.
+/*
+ * A front-facing, soft chibi person: a dark brown blunt bob frames a large
+ * peach face and huge glossy eyes.  A bright red scarf is wrapped high and
+ * wide under the chin, over a small white top, giving this warm little
+ * listener its unmistakable silhouette.
+ */
 
 #include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "muse_pixel.h"
 
 #define W MUSE_PX_W
 #define H MUSE_PX_H
@@ -17,22 +25,23 @@
 enum {
     C_BG = 0,
     C_OUT,       /* outline */
-    C_OUT2,      /* soft outline where the hood tucks around the face */
-    C_BD,        /* fur dark */
-    C_BM,        /* fur mid */
-    C_BL,        /* fur light */
-    C_BH,        /* fur highlight */
-    C_RIM,       /* state-tinted rim light */
-    C_SKIND,     /* face panel shade */
+    C_HAIRD,
+    C_HAIRM,
+    C_HAIRL,
+    C_RIM,       /* state-tinted rim light, only on hair */
+    C_SKIND,
     C_SKIN,
     C_SKINL,
-    C_IRIS,      /* bead eyes */
+    C_IRIS,
     C_SHINE,
     C_BROW,
     C_BLUSH,
-    C_BLUSHD,
     C_MOUTH,
-    C_TONGUE,
+    C_SCARFD,
+    C_SCARF,
+    C_SCARFL,
+    C_TOPD,
+    C_TOP,
     C_G0,        /* state glow ramp, bright ... */
     C_G1,
     C_G2,
@@ -43,7 +52,6 @@ enum {
     C_ACC,
     C_SHADOW,
     C_HEART,
-    C_WHITE,
     C_COUNT,
 };
 
@@ -67,28 +75,28 @@ static const scheme_t SCHEMES[MUSE_MODE_COUNT] = {
     [MUSE_MODE_OFF]       = { { 0xd8d4ff, 0x8f86d9, 0x5a4fb0, 0x2e2870 }, 0x7c72d0 },
 };
 
-/* Cream fur and a peach face. */
+/* Fixed character colours: mode light never tints the hair or red scarf. */
 static const uint32_t FIXED[C_COUNT] = {
     [C_BG] = 0x000000,
-    [C_OUT] = 0x3a2b22,
-    [C_OUT2] = 0x8c7560,
-    [C_BD] = 0xae987e,
-    [C_BM] = 0xcfbc9f,
-    [C_BL] = 0xe6d7bd,
-    [C_BH] = 0xf8eedc,
-    [C_SKIND] = 0xe9cba4,
-    [C_SKIN] = 0xf6dfbd,
-    [C_SKINL] = 0xfdeed6,
-    [C_IRIS] = 0x120d0b,
+    [C_OUT] = 0x2a1814,
+    [C_HAIRD] = 0x3a2418,
+    [C_HAIRM] = 0x5c3a28,
+    [C_HAIRL] = 0x8a6248,
+    [C_SKIND] = 0xe0a882,
+    [C_SKIN] = 0xf3c7a4,
+    [C_SKINL] = 0xffe0c4,
+    [C_IRIS] = 0x1a120e,
     [C_SHINE] = 0xffffff,
-    [C_BROW] = 0x6b5444,
-    [C_BLUSH] = 0xf4aaa0,
-    [C_BLUSHD] = 0xea8f8e,
-    [C_MOUTH] = 0x3a1f1a,
-    [C_TONGUE] = 0xe86a7a,
+    [C_BROW] = 0x4a3428,
+    [C_BLUSH] = 0xf0a090,
+    [C_MOUTH] = 0x6a3030,
+    [C_SCARFD] = 0xb4232c,
+    [C_SCARF] = 0xe23b3b,
+    [C_SCARFL] = 0xff6a62,
+    [C_TOPD] = 0xd9d3c8,
+    [C_TOP] = 0xf7f4ee,
     [C_SHADOW] = 0x16101f,
     [C_HEART] = 0xff4f8b,
-    [C_WHITE] = 0xffffff,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -209,10 +217,11 @@ static void update_palette(const scheme_t *target, float dt)
     pal[C_G2] = s_scheme[2];
     pal[C_G3] = s_scheme[3];
     pal[C_ACC] = acc;
-    pal[C_RIM] = mix(pal[C_BL], acc, 0.45f);
+    /* Hair and scarf are identity colours, never borrowed from a mode glow. */
+    pal[C_RIM] = pal[C_HAIRL];
     pal[C_AURA1] = scale_rgb(acc, 0.16f);
     pal[C_AURA2] = scale_rgb(acc, 0.34f);
-    pal[C_SPK] = mix(acc, pal[C_WHITE], 0.45f);
+    pal[C_SPK] = mix(acc, pal[C_SHINE], 0.45f);
 
     for (int i = 0; i < C_COUNT; i++) {
         s_pal[i] = to565(pal[i]);
@@ -414,7 +423,7 @@ static void draw_shadow(float cx, float y, float half_w)
     }
 }
 
-/* Stable per-position hash (0..65535) so fur tufts don't shimmer as the avatar moves. */
+/* Stable per-position hash (0..65535) so bob highlights do not shimmer. */
 static inline int32_t hash16(int x, int y)
 {
     uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u;
@@ -423,8 +432,8 @@ static inline int32_t hash16(int x, int y)
 }
 
 /*
- * The avatar: a tall furry hood shaped like a rounded bullet, with a smooth peach
- * face panel, bead eyes, rosy cheeks, stubby arms and two little feet.
+ * The head is a rounded blunt bob around a broad peach face.  The shirt,
+ * hands and feet are separate parts; the scarf is layered across them later.
  */
 typedef struct {
     float cx, cy;   /* body centre */
@@ -468,8 +477,8 @@ static inline int32_t body_field(const row_t *r, int32_t dx, int32_t *ux)
     return pow_q(r->lut, abs(u)) + r->v_pow;
 }
 
-/* Fur tone from a surface normal, with vertical streaks for texture. */
-static uint8_t fur(int32_t nx, int32_t ny, int x, int y, int ox, int oy)
+/* Dark-brown bob tone from a surface normal, with stable strand texture. */
+static uint8_t hair(int32_t nx, int32_t ny, int x, int y, int ox, int oy)
 {
     int32_t r2 = (nx * nx + ny * ny) >> Q;
     int32_t nz = r2 >= ONE ? 0 : sqrt_q(ONE - r2);
@@ -481,7 +490,7 @@ static uint8_t fur(int32_t nx, int32_t ny, int x, int y, int ox, int oy)
     if (r2 > QF(0.86f) && ((nx * QF(0.6f) + ny * QF(0.8f)) >> Q) > QF(0.72f) && b < QF(0.4f)) {
         return C_RIM;
     }
-    return lv > QF(0.95f) ? C_BH : lv > QF(0.62f) ? C_BL : lv > QF(0.28f) ? C_BM : C_BD;
+    return lv > QF(0.95f) ? C_HAIRL : lv > QF(0.62f) ? C_HAIRL : lv > QF(0.28f) ? C_HAIRM : C_HAIRD;
 }
 
 typedef struct {
@@ -526,11 +535,11 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
     limb_q_t arm_q[2], foot_q[2];
     for (int i = 0; i < 2; i++) {
         limb_setup(&arms[i], 2.9f, 5.2f, &arm_q[i]);
-        limb_setup(&feet[i], 4.4f, 2.6f, &foot_q[i]);
+        limb_setup(&feet[i], 3.2f, 2.0f, &foot_q[i]);
     }
     /* Only rows/columns that can hold the avatar are shaded. */
     int x0 = (int)(j->cx - j->a * 1.1f - 8), x1 = (int)(j->cx + j->a * 1.1f + 8);
-    int y0 = (int)(j->cy - j->b - 8), y1 = (int)(j->cy + j->b + 5);
+    int y0 = (int)(j->cy - j->b - 8), y1 = (int)(j->cy + j->b + 14);
     x0 = x0 < 0 ? 0 : x0;
     y0 = y0 < 0 ? 0 : y0;
     x1 = x1 >= W ? W - 1 : x1;
@@ -551,8 +560,7 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
             for (int a = 0; a < 2 && !arm; a++) {
                 if (in_limb(&arm_q[a], fx, fy, &lx, &ly)) {
                     s_mask[y * W + x] = M_ARM;
-                    int32_t nx = ((lx * QF(0.85f)) >> Q) + (a ? QF(0.25f) : -QF(0.25f));
-                    px(x, y, fur(nx, (ly * QF(0.8f)) >> Q, x, y, ox, oy));
+                    px(x, y, ly < -QF(0.20f) ? C_SKINL : C_SKIN);
                     arm = true;
                 }
             }
@@ -562,7 +570,7 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
 
             int32_t ux, uy = row.v;
             int32_t v = body_field(&row, fx - cx, &ux);
-            /* Fuzzy silhouette: tufts poke in and out along the edge. */
+            /* A tiny stable edge variation keeps the blunt bob pleasantly pixelled. */
             int32_t tuft = ((hash16(x - ox, y - oy) - 32768) * QF(0.16f)) >> 16;
             if (v <= ONE + tuft) {
                 int32_t fu = ((fx - fcx) * inv_fa) >> Q;
@@ -575,7 +583,7 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
                     int32_t fv = row.fv, fv1 = fv + QF(0.15f);
                     uint8_t c = C_SKIN;
                     if (fv < -QF(0.55f) && b < ((-fv - QF(0.45f)) * QF(1.8f)) >> Q) {
-                        c = C_SKIND;   /* the hood shades the top of the face */
+                        c = C_SKIND;   /* fringe shadow at the top of the face */
                     } else if (((fu2 * QF(1.4f)) >> Q) + ((fv1 * fv1) >> Q) < QF(0.32f) && b < QF(0.55f)) {
                         c = C_SKINL;
                     } else if (fv > QF(0.75f) && b < QF(0.4f)) {
@@ -584,11 +592,11 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
                     px(x, y, c);
                 } else {
                     s_mask[y * W + x] = M_BODY;
-                    /* Fur darkens where it tucks around the face. */
+                    /* The bob darkens around the face. */
                     if (ff < QF(1.75f) && (ff < QF(1.3f) || b < ((QF(1.75f) - ff) * QF(1.4f)) >> Q)) {
-                        px(x, y, ff < QF(1.3f) ? C_OUT2 : C_BD);
+                        px(x, y, ff < QF(1.3f) ? C_HAIRM : C_HAIRD);
                     } else {
-                        px(x, y, fur((ux * QF(0.95f)) >> Q, (uy * QF(0.95f)) >> Q, x, y, ox, oy));
+                        px(x, y, hair((ux * QF(0.95f)) >> Q, (uy * QF(0.95f)) >> Q, x, y, ox, oy));
                     }
                 }
                 continue;
@@ -597,7 +605,7 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
             for (int f = 0; f < 2; f++) {
                 if (in_limb(&foot_q[f], fx, fy, &lx, &ly)) {
                     s_mask[y * W + x] = M_FOOT;
-                    px(x, y, ly < -QF(0.2f) ? C_BM : C_BD);
+                    px(x, y, ly < -QF(0.2f) ? C_TOP : C_TOPD);
                     break;
                 }
             }
@@ -624,6 +632,63 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
     }
 }
 
+/* The white shirt is deliberately simple: at this scale the scarf owns the pose. */
+static void draw_top(float cx, float top)
+{
+    static const uint8_t half[] = { 8, 10, 11, 12, 12, 11, 10, 9, 8 };
+    int x = iround(cx), y = iround(top);
+    for (int r = 0; r < (int)(sizeof(half) / sizeof(half[0])); r++) {
+        int hw = half[r];
+        for (int q = -hw; q <= hw; q++) {
+            bool edge = q == -hw || q == hw || r == (int)(sizeof(half) / sizeof(half[0])) - 1;
+            px(x + q, y + r, edge ? C_OUT : (q < -3 && r < 5 ? C_TOPD : C_TOP));
+        }
+    }
+}
+
+/* A high, thick wrap: it is wider than the bob so it reads as the silhouette. */
+static void draw_scarf(float cx, float top)
+{
+    static const uint8_t half[] = { 15, 18, 19, 19, 20, 20, 19, 17, 15 };
+    int x = iround(cx), y = iround(top);
+    int rows = (int)(sizeof(half) / sizeof(half[0]));
+    for (int r = 0; r < rows; r++) {
+        int hw = half[r];
+        for (int q = -hw; q <= hw; q++) {
+            bool edge = q == -hw || q == hw || r == 0 || r == rows - 1;
+            uint8_t c = C_SCARF;
+            if (edge) {
+                c = C_OUT;
+            } else if (q < -7 && r < 5) {
+                c = C_SCARFL;
+            } else if (r > 5 || q > 12) {
+                c = C_SCARFD;
+            }
+            px(x + q, y + r, c);
+        }
+    }
+    /* The doubled upper fold makes the red wrap look soft and layered. */
+    for (int q = -15; q <= 12; q++) {
+        px(x + q, y + 4, q < -6 ? C_SCARFL : C_SCARFD);
+    }
+}
+
+static void draw_bangs(const avatar_t *j)
+{
+    int cx = iround(j->cx), top = iround(j->cy - j->b);
+    static const uint8_t half[] = { 8, 11, 13, 14, 14, 13, 12, 11, 9 };
+    for (int r = 0; r < (int)(sizeof(half) / sizeof(half[0])); r++) {
+        for (int q = -(int)half[r]; q <= (int)half[r]; q++) {
+            uint8_t c = (r < 2 || q > 8) ? C_HAIRD : (q < -7 ? C_HAIRL : C_HAIRM);
+            /* A straight fringe, with three tiny squared notches at its edge. */
+            if (r == 8 && (q == -5 || q == 0 || q == 5)) {
+                continue;
+            }
+            px(cx + q, top + 2 + r, c);
+        }
+    }
+}
+
 typedef enum {
     EYES_NORMAL,
     EYES_WIDE,
@@ -631,7 +696,7 @@ typedef enum {
     EYES_X,
 } eye_style_t;
 
-/* The eyes are small glossy black beads. */
+/* Exaggerated glossy eyes carry the expression at 64 pixels. */
 static void draw_eye(float ex, float ey, float openness, eye_style_t style, float gx, float gy)
 {
     int cx = iround(ex + gx * 0.8f), cy = iround(ey + gy * 0.7f);
@@ -652,13 +717,13 @@ static void draw_eye(float ex, float ey, float openness, eye_style_t style, floa
         return;
     }
 
-    static const char *const BEAD[] = { ".##.", "#o##", "####", ".##." };
-    static const char *const BIG[] = { ".##.", "#o##", "#o##", "####", ".##." };
+    static const char *const BEAD[] = { ".####.", "#o####", "######", "######", ".####." };
+    static const char *const BIG[] = { ".####.", "#o####", "######", "######", "######", ".####." };
     const char *const *rows = style == EYES_WIDE ? BIG : BEAD;
-    int n = style == EYES_WIDE ? 5 : 4;
+    int n = style == EYES_WIDE ? 6 : 5;
     /* Lids close from the top: skip the upper rows as openness drops. */
     int skip = iround((1 - openness) * (n - 1));
-    stamp(rows + skip, n - skip, cx - 2, cy - 2 + skip, C_IRIS, skip ? C_IRIS : C_SHINE);
+    stamp(rows + skip, n - skip, cx - 3, cy - 2 + skip, C_IRIS, skip ? C_IRIS : C_SHINE);
 }
 
 static void draw_blush(int x, int y, float strength)
@@ -671,7 +736,7 @@ static void draw_blush(int x, int y, float strength)
             }
             float b = bayer(x + i, y + j);
             if (b < strength) {
-                px(x - 2 + i, y + j, (j == 1 && b < strength * 0.5f) ? C_BLUSHD : C_BLUSH);
+                px(x - 2 + i, y + j, C_BLUSH);
             }
         }
     }
@@ -696,7 +761,7 @@ static void draw_mouth(int x, int y, mouth_t m, float open)
     }
     case MOUTH_O: {
         static const char *const S[] = { ".##.", "#oo#", ".##." };
-        stamp(S, 3, x - 2, y - 1, C_MOUTH, C_TONGUE);
+        stamp(S, 3, x - 2, y - 1, C_MOUTH, C_MOUTH);
         break;
     }
     case MOUTH_HMM: {
@@ -711,14 +776,14 @@ static void draw_mouth(int x, int y, mouth_t m, float open)
             int inset = (j == 0 || j == h - 1) && h > 2 ? 1 : 0;
             for (int i = inset; i < w - inset; i++) {
                 bool tongue = h >= 3 && j == h - 2 && i > inset && i < w - inset - 1;
-                px(x - w / 2 + i, y + j, tongue ? C_TONGUE : C_MOUTH);
+                px(x - w / 2 + i, y + j, tongue ? C_BLUSH : C_MOUTH);
             }
         }
         break;
     }
     case MOUTH_GRIN: {
         static const char *const S[] = { "#####", ".#o#.", "..#.." };
-        stamp(S, 3, x - 2, y, C_MOUTH, C_TONGUE);
+        stamp(S, 3, x - 2, y, C_MOUTH, C_BLUSH);
         break;
     }
     case MOUTH_FLAT: {
@@ -732,7 +797,7 @@ static void draw_mouth(int x, int y, mouth_t m, float open)
 static void draw_sparkle(int x, int y, float twinkle, bool front)
 {
     uint8_t arm = front ? C_ACC : C_AURA2;
-    uint8_t core = front ? C_WHITE : C_SPK;
+    uint8_t core = front ? C_SHINE : C_SPK;
     if (twinkle > 0.8f) {
         px(x, y, core);
         for (int k = 1; k <= 2; k++) {
@@ -817,7 +882,7 @@ static void draw_hearts(float cx, float top, float t, float amount)
         }
         int hx = iround(cx + (i ? 13 : -18) + sinf(ph * TAU + i) * 2);
         int hy = iround(top - ph * 10);
-        stamp(HEART, 5, hx, hy, C_HEART, C_WHITE);
+        stamp(HEART, 5, hx, hy, C_HEART, C_SHINE);
     }
 }
 
@@ -933,14 +998,15 @@ void muse_pixel_render(const muse_pose_t *p)
 
     float breathe = sinf(t * breathe_rate + 1.0f) * 0.03f;
     avatar_t j;
-    j.a = 16.0f * (1 + breathe) * (2.0f - squash) + level * 0.8f;
-    j.b = 23.0f * (1 - breathe) * squash;
+    /* Big bobbed head; the scarf, shirt and feet extend it to the floor. */
+    j.a = 17.0f * (1 + breathe) * (2.0f - squash) + level * 0.5f;
+    j.b = 18.5f * (1 - breathe) * squash;
     j.cx = 32.0f + lean;
-    j.cy = 56.5f - j.b + bob * 0.5f - hop;   /* feet stay near the ground */
-    j.fa = j.a * 0.66f;
-    j.fb = 7.4f * squash;
+    j.cy = 46.0f - j.b + bob * 0.5f - hop;
+    j.fa = j.a * 0.78f;
+    j.fb = 14.0f * squash;
     j.fx = j.cx + lean * 0.3f;
-    j.fy = j.cy - j.b * 0.30f + bob * 0.3f;
+    j.fy = j.cy + 1.0f + bob * 0.2f;
 
     /* ---- background layers ---- */
     float aura_r = 29.0f + level * 4.0f + sinf(t * 1.5f) * 1.0f;
@@ -959,11 +1025,10 @@ void muse_pixel_render(const muse_pose_t *p)
     draw_sparkles(p, j.cx, j.cy, false, spk_speed, spk_count);
 
     /* ---- limbs ---- */
-    float base = j.cy + j.b;
     limb_t feet[2];
     float step = mode == MUSE_MODE_SPEAKING ? sinf(t * 5.0f) * 0.6f : 0.0f;
-    feet[0] = (limb_t){ j.cx - 7.0f, base - 0.5f + (happy > 0 ? hop * 0.3f : step), -0.15f };
-    feet[1] = (limb_t){ j.cx + 7.0f, base - 0.5f + (happy > 0 ? hop * 0.3f : -step), 0.15f };
+    feet[0] = (limb_t){ j.cx - 6.0f, 55.5f - hop * 0.2f + step, -0.15f };
+    feet[1] = (limb_t){ j.cx + 6.0f, 55.5f - hop * 0.2f - step, 0.15f };
 
     limb_t arms[2];
     float adx = j.a + 0.3f;
@@ -975,7 +1040,7 @@ void muse_pixel_render(const muse_pose_t *p)
         arms[1] = (limb_t){ j.cx + adx - 1.0f, j.fy + 5.0f, -0.55f };
         break;
     case MUSE_MODE_THINKING:
-        /* One paw up to the chin. */
+        /* One hand up to the chin. */
         arms[0] = (limb_t){ j.cx - adx, ay, -0.35f };
         arms[1] = (limb_t){ j.cx + 7.5f, j.fy + j.fb + 3.5f, -1.1f };
         break;
@@ -1005,7 +1070,10 @@ void muse_pixel_render(const muse_pose_t *p)
         break;
     }
     }
+    draw_top(j.cx, j.cy + j.b - 1.0f);
     draw_avatar(&j, arms, feet);
+    draw_bangs(&j);
+    draw_scarf(j.cx, j.cy + j.b - 8.0f);
 
     /* ---- face ---- */
     float eye_y = j.fy - 0.5f;
@@ -1058,6 +1126,9 @@ void muse_pixel_render(const muse_pose_t *p)
     } else if (mode == MUSE_MODE_LISTENING) {
         px(bl - 1, by - 1, C_BROW); px(bl, by - 1, C_BROW);
         px(br - 1, by - 1, C_BROW); px(br, by - 1, C_BROW);
+    } else {
+        px(bl - 1, by, C_BROW); px(bl, by - 1, C_BROW);
+        px(br - 1, by - 1, C_BROW); px(br, by, C_BROW);
     }
 
     float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f);
