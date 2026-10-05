@@ -120,11 +120,23 @@ idf.py -p /dev/cu.usbmodem1101 -B build-passport monitor
 
 ## 第一次使用
 
-已经配对过的设备，刷完会自己连上原来的 Wi-Fi。新设备在 Muse App 里添加，名字是 `MuseGadget-` 加后面几位。屏幕提示确认时，按一下 OK。
+已经配对过的设备，刷完会自己连上原来的 Wi-Fi。没配对过的，开机后自己用蓝牙广播，不用先按键。屏幕上的名字是 `MuseGadget-` 加六位十六进制，和手机里看到的是同一个。
+
+在 Muse App 里：
+
+1. 打开 Settings > Devices > Developer mode。
+2. 点右上角的 **+**（Settings > Devices > Add Device），选屏幕上的那个名字。
+3. 屏幕弹出「配对码」，中间是六位数字，下面写着「在手机上输入」。把这六位填进手机。
+4. 卡片换成「与 Muse 应用配对」，中间是 **OK**，下面写着「按下这个键确认」。一分钟内按一下 OK。这一下只确认配对，不会开始录音。超过一分钟，手机断开，配对卡片消失，从第 2 步再来。
+5. 然后在 App 里按提示选择 Wi-Fi。设备连上这个网络，再连上 Muse。连上以后，主页中间显示「就绪」。
+
+「配对码」或「与 Muse 应用配对」还在屏幕上时，UP 和 DOWN 不会打开菜单，也不会打开上一条回复。配对过程中不要开串口。USB 一开，板子经常会复位，这一轮就断了。
+
+配好之后：
 
 - 按住 OK 录音，松开后发送。等这条回复出现在屏幕上，再按下一次。
 - 主页短按 UP 打开菜单，短按 DOWN 看上一条回复。进了菜单以后，UP / DOWN 移动，OK 确认。
-- 解除配对只走菜单里的「重置配对」。这块板没有“长按 5 秒恢复出厂”的手势。
+- 要重新配对，短按 UP 打开菜单，选「重置配对」，再按 OK。屏幕会问是否忘记 Wi-Fi 和 Muse 应用的配对，然后重启。这块板没有“长按 5 秒恢复出厂”的手势。
 
 ## 注意事项
 
@@ -163,7 +175,23 @@ python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
   write-flash @flash_args
 ```
 
-Release every button before flashing. GPIO0 is the key ladder and the boot strap. Do not use `idf.py flash` with ESP-IDF 6.0.1 here. Do not pass `--erase-all` or run `erase-flash`; that wipes pairing, Wi-Fi, and screen settings in NVS. Do not run `tools/muse/board.sh build` against this tree; it deletes `managed_components`. Opening the serial port often resets the board. Pair from the Muse app as `MuseGadget-…`, and confirm with OK. On the home screen, a short UP opens the menu and a short DOWN shows the previous reply. Inside the menu, UP and DOWN move and OK confirms. Unpairing is the menu item 重置配对.
+Release every button before flashing. GPIO0 is the key ladder and the boot strap. Do not use `idf.py flash` with ESP-IDF 6.0.1 here. Do not pass `--erase-all` or run `erase-flash`; that wipes pairing, Wi-Fi, and screen settings in NVS. Do not run `tools/muse/board.sh build` against this tree; it deletes `managed_components`. Opening the serial port often resets the board, so leave it closed while pairing.
+
+### Pairing
+
+A board that is already paired reconnects to its saved Wi-Fi after a reflash that leaves NVS alone. An unpaired board advertises on its own. The screen shows `MuseGadget-` plus six hex digits, the same name the app lists.
+
+In the Muse app:
+
+1. Turn on **Settings > Devices > Developer mode**.
+2. Add a device (**Settings > Devices > Add Device**, the **+** in the top right) and pick the name on the screen.
+3. The screen shows **配对码**, six digits, and **在手机上输入**. Type those digits on the phone.
+4. The card changes to **与 Muse 应用配对**, with **OK** and **按下这个键确认**. Press OK once within a minute. That press only confirms pairing. It does not start a recording. After a minute the phone disconnects, the card goes away, and you start again from step 2.
+5. Choose the Wi-Fi network when the app asks. The board joins it and then connects to Muse. Once that is up, the home screen shows **就绪**.
+
+While either card is up, UP and DOWN do not open the menu or the previous reply.
+
+Hold OK to record and release to send. On the home screen a short UP opens the menu and a short DOWN shows the previous reply. Inside the menu, UP and DOWN move and OK confirms. To pair again, open the menu and choose **重置配对**, then press OK. There is no five-second reset.
 
 Follow [铁柱AGI on X](https://x.com/cgnot996) (@cgnot996). On WeChat, search 铁柱AGI or scan the image in the Chinese section above.
 

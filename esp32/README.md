@@ -148,10 +148,13 @@ connected.
 | Red, blinking | Something went wrong: check the log |
 
 To reset the device and set it up again, hold the button for 5 seconds. On the
-FoloToy AI Passport, status is shown on the screen: hold **OK** to talk and to
-confirm pairing, use **DOWN** to open and move through the menu, and **UP** to
-move up. Select **Reset pairing** from that menu; it has no five-second reset
-gesture.
+FoloToy AI Passport, status is on the screen. Press **OK** once when the card
+asks you to confirm pairing, and hold **OK** to talk. On the home screen a
+short **UP** opens the menu and a short **DOWN** shows the previous reply.
+Inside the menu, UP and DOWN move and OK confirms. Choose **重置配对** to
+forget Wi-Fi and the Muse app; there is no five-second reset gesture. The
+pairing screens are in the repository
+[README](../README.md#第一次使用).
 
 Pairing requires a press of the button on the device, and every setup creates
 a fresh encrypted session. Because these are community devices, pairing has no
